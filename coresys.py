@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
@@ -271,7 +272,7 @@ class CoresysClient:
     ) -> Path:
         self.require_login()
         with self.session.request(
-            method, url, data=data, files=files, headers=headers, stream=True, timeout=(30, 900)
+            method, url, data=data, files=files, headers=headers, stream=True, timeout=(30, 3600)
         ) as response:
             response.raise_for_status()
             content_type = response.headers.get("Content-Type", "").lower()
@@ -392,11 +393,25 @@ class CoresysClient:
         raise CoresysError(str(message))
 
     def poll_pod_v2(self, process_id: str) -> dict[str, Any]:
-        response = self.session.post(
-            f"{BASE_URL}/pod_report_v2/check_progress", data={"id": process_id}, timeout=45
-        )
-        response.raise_for_status()
-        result = response.json()
+        last_error: requests.RequestException | None = None
+        for attempt in range(3):
+            try:
+                response = self.session.post(
+                    f"{BASE_URL}/pod_report_v2/check_progress",
+                    data={"id": process_id},
+                    headers={"Connection": "close"},
+                    timeout=45,
+                )
+                response.raise_for_status()
+                result = response.json()
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(attempt + 1)
+        else:
+            raise CoresysError(f"Koneksi polling POD terputus setelah 3 percobaan: {last_error}") from last_error
+
         status = int(result.get("status", 1))
         if status == 2:
             return {

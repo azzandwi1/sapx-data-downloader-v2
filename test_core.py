@@ -4,6 +4,9 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+from unittest.mock import Mock, patch
+
+import requests
 
 from coresys import CoresysClient, format_awb_text, normalize_awbs, split_awbs, split_date_range
 from jobs import JobManager
@@ -110,6 +113,19 @@ class ParallelJobTests(unittest.TestCase):
                 self.assertEqual(client.state["maximum"], 2)
             finally:
                 manager.shutdown()
+
+
+class PodPollingTests(unittest.TestCase):
+    @patch("coresys.time.sleep", return_value=None)
+    def test_retries_transient_disconnect(self, _sleep):
+        client = CoresysClient()
+        processing = Mock()
+        processing.raise_for_status.return_value = None
+        processing.json.return_value = {"status": 1}
+        client.session.post = Mock(side_effect=[requests.ConnectionError("closed"), processing])
+
+        self.assertEqual(client.poll_pod_v2("123"), {"state": "processing"})
+        self.assertEqual(client.session.post.call_count, 2)
 
 
 if __name__ == "__main__":
