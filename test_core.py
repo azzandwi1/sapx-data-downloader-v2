@@ -53,6 +53,22 @@ class UrlTests(unittest.TestCase):
         self.assertIn("/pickup/report_monitoring_xlsx/-/01-01-2026/07-01-2026/0/", url)
         self.assertTrue(url.endswith("?token=token_02"))
 
+    def test_pickup_manual_url_matches_current_portal_contract(self):
+        client = CoresysClient()
+        url = client.pickup_manual_url(
+            "2026-01-01",
+            "2026-01-01",
+            {
+                "pilih_status": "-",
+                "date_pickup": "0",
+                "origin_area_branch_code": "1",
+                "destination_area_branch_code": "-",
+            },
+            "report_monitoring",
+        )
+        self.assertIn("/pickup_manual/report_monitoring/-/01-01-2026/01-01-2026/-/", url)
+        self.assertTrue(url.endswith("/-/1/-"))
+
 
 class XlsxResultTests(unittest.TestCase):
     def test_detects_header_only_awb_result(self):

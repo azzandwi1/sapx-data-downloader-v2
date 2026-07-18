@@ -251,12 +251,20 @@ class CoresysClient:
         allowed = {"report_monitoring", "report_monitoring_v2"}
         if export not in allowed:
             raise CoresysError("Jenis export Pickup Manual tidak didukung.")
+        date_pickup = self._value(filters, "date_pickup", "1")
+        destination_area = self._value(filters, "destination_area_branch_code")
+        if date_pickup == "0":
+            date_pickup = "-"
+        if destination_area == "0":
+            destination_area = "-"
         parts = [
             self._value(filters, "customers"), self._pickup_date(start), self._pickup_date(end),
             self._value(filters, "pilih_status", "0"), self._value(filters, "koli"),
             self._value(filters, "kilo"), self._value(filters, "counter_type"),
             self._value(filters, "branch_ori"), self._value(filters, "branch_dest"),
-            self._value(filters, "date_pickup", "1"),
+            date_pickup,
+            self._value(filters, "origin_area_branch_code"),
+            destination_area,
         ]
         return f"{BASE_URL}/pickup_manual/{export}/{self._path(parts)}"
 
