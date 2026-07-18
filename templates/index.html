@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CORESYS Batch Downloader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">CS</span>
+        <div><strong>CORESYS</strong><small>Batch Downloader</small></div>
+      </div>
+      <nav aria-label="Menu utama">
+        <p class="nav-label">Pickup</p>
+        <button class="nav-item active" data-workflow="pickup"><i data-lucide="package-search"></i><span>Monitoring Pickup</span></button>
+        <button class="nav-item" data-workflow="pickup_manual"><i data-lucide="clipboard-list"></i><span>Pickup Manual</span></button>
+        <p class="nav-label">Laporan POD</p>
+        <button class="nav-item" data-workflow="pod_v2"><i data-lucide="file-spreadsheet"></i><span>Export Laporan POD V2</span></button>
+        <button class="nav-item" data-workflow="pod_awb"><i data-lucide="scan-line"></i><span>Laporan POD by AWB</span></button>
+        <p class="nav-label">Aktivitas</p>
+        <button class="nav-item" data-workflow="jobs"><i data-lucide="list-checks"></i><span>Antrean Download</span><span id="active-count" class="nav-count">0</span></button>
+      </nav>
+      <div class="session-block">
+        <div class="avatar" id="avatar">-</div>
+        <div class="session-copy"><strong id="session-user">Belum login</strong><small id="session-state">Portal tidak terhubung</small></div>
+        <button id="logout-button" class="icon-button" type="button" title="Keluar" hidden><i data-lucide="log-out"></i></button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p id="breadcrumb">Pickup / Monitoring Pickup</p>
+          <h1 id="page-title">Monitoring Pickup</h1>
+        </div>
+        <div class="connection"><span id="connection-dot"></span><span id="connection-text">Belum terhubung</span></div>
+      </header>
+
+      <section id="form-view" class="content-band">
+        <form id="workflow-form">
+          <div class="section-heading">
+            <div><h2>Parameter export</h2><p id="workflow-description"></p></div>
+            <button type="button" id="reset-button" class="button secondary"><i data-lucide="rotate-ccw"></i>Reset</button>
+          </div>
+
+          <div id="date-section" class="form-section">
+            <h3>Rentang dan batch</h3>
+            <div class="field-grid compact-grid">
+              <label class="field"><span>Tanggal awal</span><input type="date" id="date_from" required></label>
+              <label class="field"><span>Tanggal akhir</span><input type="date" id="date_to" required></label>
+              <label class="field"><span>Batch per hari</span><input type="number" id="batch_days" min="1" max="366" value="7" required></label>
+              <label class="field"><span>Jeda antar batch</span><div class="input-suffix"><input type="number" id="delay_seconds" min="0" max="300" value="3"><span>detik</span></div></label>
+            </div>
+            <div id="batch-preview" class="batch-preview"><i data-lucide="split"></i><span>Tentukan rentang tanggal untuk melihat pembagian batch.</span></div>
+          </div>
+
+          <div id="awb-section" class="form-section" hidden>
+            <div class="awb-heading"><h3>Daftar nomor AWB</h3><span id="awb-count">0 AWB unik</span></div>
+            <label class="field full"><span>Nomor AWB</span><textarea id="awb_text" rows="12" placeholder="Tempel nomor AWB, satu nomor per baris"></textarea></label>
+            <div class="field-grid compact-grid awb-settings">
+              <label class="field"><span>Maksimum per file</span><input type="number" id="batch_size" value="10000" min="1" max="10000"></label>
+              <label class="field"><span>Jeda antar batch</span><div class="input-suffix"><input type="number" id="awb_delay_seconds" min="0" max="300" value="3"><span>detik</span></div></label>
+            </div>
+            <div id="awb-preview" class="batch-preview"><i data-lucide="files"></i><span>Daftar akan otomatis dipecah maksimal 10.000 AWB per file.</span></div>
+          </div>
+
+          <div id="filter-section" class="form-section">
+            <div class="filter-heading"><h3>Filter portal</h3><span id="option-state">Memuat opsi...</span></div>
+            <div id="filter-grid" class="field-grid"></div>
+          </div>
+
+          <div id="export-section" class="form-section">
+            <h3>Jenis export</h3>
+            <div id="export-options" class="segmented"></div>
+          </div>
+
+          <div class="form-actions">
+            <p>File disimpan di folder <code>downloads</code> dan tersedia dari tabel antrean.</p>
+            <button type="submit" id="start-button" class="button primary"><i data-lucide="play"></i><span>Mulai download</span></button>
+          </div>
+        </form>
+      </section>
+
+      <section id="jobs-view" class="content-band" hidden>
+        <div class="section-heading jobs-heading">
+          <div><h2>Antrean download</h2><p>Pekerjaan diproses satu per satu untuk menjaga sesi portal tetap stabil.</p></div>
+          <button id="refresh-jobs" class="button secondary" type="button"><i data-lucide="refresh-cw"></i>Perbarui</button>
+        </div>
+        <div id="jobs-list" class="jobs-list"></div>
+        <div id="jobs-empty" class="empty-state"><i data-lucide="inbox"></i><strong>Belum ada pekerjaan</strong><span>Pekerjaan baru akan muncul di sini.</span></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="login-dialog">
+    <form id="login-form" method="dialog">
+      <div class="login-header"><span class="brand-mark">CS</span><div><h2>Hubungkan ke CORESYS</h2><p>Masuk menggunakan akun portal Anda.</p></div></div>
+      <label class="field"><span>Username</span><input id="login-username" autocomplete="username" required></label>
+      <label class="field"><span>Password</span><input id="login-password" type="password" autocomplete="current-password" required></label>
+      <label class="field"><span>PIN 6 digit</span><input id="login-pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+      <p id="login-error" class="error-message" hidden></p>
+      <button id="login-button" class="button primary full-button" type="submit"><i data-lucide="log-in"></i>Masuk</button>
+      <p class="privacy-note"><i data-lucide="shield-check"></i>Kredensial hanya disimpan di memori selama aplikasi berjalan.</p>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
