@@ -20,6 +20,16 @@ python app.py
 
 Buka `http://127.0.0.1:5177`. Masukkan akun portal pada dialog login. Kredensial tidak ditulis ke file; sesi hanya hidup di memori sampai aplikasi dihentikan atau pengguna logout.
 
+### Instalasi Windows
+
+Pilihan termudah adalah mengunduh `SAPX-Data-Downloader.exe` dari halaman [Releases](https://github.com/azzandwi1/sapx-data-downloader-v2/releases). Aplikasi akan membuka browser lokal secara otomatis. File hasil disimpan di:
+
+```text
+%LOCALAPPDATA%\SAPX Data Downloader\downloads
+```
+
+Pengguna yang menjalankan source code dapat klik dua kali `start-local.bat`. Skrip membuat virtual environment, memasang dependency, menjalankan backend, dan membuka browser.
+
 File hasil disimpan di `downloads/<job-id>/`. Monitoring Pickup dan Pickup Manual diunduh langsung per batch. POD V2 membuat proses pada server laporan, memantau status, lalu mengambil file saat selesai. POD by AWB menghapus duplikat dan membagi daftar maksimal 10.000 AWB per file.
 
 ## Catatan operasional

@@ -30,6 +30,9 @@
     .feature strong { display:block; margin-bottom:8px; font-size:14px; }
     .feature p { margin:0; color:var(--muted); font-size:13px; line-height:1.6; }
     pre { overflow:auto; margin:0; padding:18px; border-radius:5px; background:#111a18; color:#e8efed; font:13px/1.7 Consolas,monospace; }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
+    .action { display:inline-flex; min-height:40px; align-items:center; padding:10px 15px; border-radius:4px; background:var(--green); color:white; font-size:12px; font-weight:750; text-decoration:none; }
+    .action.secondary { border:1px solid var(--line); background:white; color:var(--ink); }
     .flow { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; align-items:center; }
     .step { min-height:82px; display:grid; place-items:center; padding:15px; border:1px solid var(--line); background:white; text-align:center; font-size:12px; font-weight:700; }
     footer { padding:24px; border-top:1px solid var(--line); color:var(--muted); text-align:center; font-size:11px; }
@@ -46,6 +49,10 @@
       <p class="eyebrow">CORESYS export automation</p>
       <h1>Batch downloader untuk data operasional SAPX</h1>
       <p class="lead">Memecah rentang tanggal dan daftar AWB, menjalankan export secara berurutan, memantau proses POD, dan mengunduh hasil secara otomatis.</p>
+      <div class="actions">
+        <a class="action" href="https://github.com/azzandwi1/sapx-data-downloader-v2/releases">Download untuk Windows</a>
+        <a class="action secondary" href="#instalasi">Petunjuk instalasi</a>
+      </div>
     </section>
     <div class="notice"><strong>GitHub Pages adalah dokumentasi statis.</strong> Login CORESYS, antrean background, dan download memerlukan backend Python yang dijalankan secara lokal atau pada server privat.</div>
     <img class="preview" src="assets/app-preview.png" alt="Preview antarmuka SAPX Data Downloader V2">
@@ -70,8 +77,10 @@
       </div>
     </section>
 
-    <section class="section">
-      <h2>Menjalankan lokal</h2>
+    <section class="section" id="instalasi">
+      <h2>Instalasi lokal</h2>
+      <p class="lead">Unduh <code>SAPX-Data-Downloader.exe</code> dari halaman Releases, jalankan, lalu browser akan terbuka otomatis di alamat lokal. Data tersimpan di komputer pengguna dan tidak melewati GitHub Pages.</p>
+      <h2 style="margin-top:28px">Menjalankan dari source</h2>
       <pre>python -m pip install -r requirements.txt
 python app.py
 

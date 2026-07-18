@@ -1,6 +1,10 @@
 __pycache__/
 .pytest_cache/
 .venv/
+.build-venv/
+build/
+dist/
+*.spec
 *.log
 downloads/*
 !downloads/.gitkeep

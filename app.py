@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import uuid
+import webbrowser
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file, session
@@ -11,8 +13,19 @@ from coresys import CoresysClient, CoresysError, normalize_awbs
 from jobs import JobManager
 
 
-ROOT = Path(__file__).resolve().parent
-app = Flask(__name__)
+SOURCE_ROOT = Path(__file__).resolve().parent
+BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
+if getattr(sys, "frozen", False):
+    default_data_root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SAPX Data Downloader"
+else:
+    default_data_root = SOURCE_ROOT
+DATA_ROOT = Path(os.environ.get("SAP_DOWNLOADER_DATA", default_data_root)).resolve()
+
+app = Flask(
+    __name__,
+    template_folder=str(BUNDLE_ROOT / "templates"),
+    static_folder=str(BUNDLE_ROOT / "static"),
+)
 app.config.update(
     SECRET_KEY=os.environ.get("SAP_DOWNLOADER_SECRET", os.urandom(32)),
     MAX_CONTENT_LENGTH=16 * 1024 * 1024,
@@ -22,7 +35,7 @@ app.config.update(
 
 clients: dict[str, CoresysClient] = {}
 clients_lock = threading.RLock()
-jobs = JobManager(ROOT / "downloads")
+jobs = JobManager(DATA_ROOT / "downloads")
 
 
 def current_client() -> CoresysClient:
@@ -138,4 +151,7 @@ def download(job_id: str, batch_index: int):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "5177")), debug=False, threaded=True)
+    port = int(os.environ.get("PORT", "5177"))
+    if getattr(sys, "frozen", False):
+        threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

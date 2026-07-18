@@ -15,6 +15,7 @@ from coresys import CoresysClient, CoresysError, split_awbs, split_date_range
 class JobManager:
     def __init__(self, download_root: Path) -> None:
         self.download_root = download_root
+        self.download_root.mkdir(parents=True, exist_ok=True)
         self.jobs: dict[str, dict[str, Any]] = {}
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="coresys-download")
