@@ -4,7 +4,7 @@ import threading
 import time
 import uuid
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,12 +13,21 @@ from coresys import CoresysClient, CoresysError, split_awbs, split_date_range
 
 
 class JobManager:
-    def __init__(self, download_root: Path) -> None:
+    def __init__(
+        self,
+        download_root: Path,
+        max_concurrent_batches: int = 3,
+        max_concurrent_jobs: int = 4,
+    ) -> None:
         self.download_root = download_root
         self.download_root.mkdir(parents=True, exist_ok=True)
         self.jobs: dict[str, dict[str, Any]] = {}
         self.lock = threading.RLock()
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="coresys-download")
+        self.job_executor = ThreadPoolExecutor(max_workers=max_concurrent_jobs, thread_name_prefix="coresys-job")
+        self.batch_executor = ThreadPoolExecutor(
+            max_workers=max_concurrent_batches,
+            thread_name_prefix="coresys-batch",
+        )
 
     def create(self, client: CoresysClient, payload: dict[str, Any]) -> dict[str, Any]:
         workflow = payload.get("workflow")
@@ -60,8 +69,9 @@ class JobManager:
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "filters": payload.get("filters") or {},
             "export": payload.get("export", ""),
-            "delay_seconds": max(0, min(int(payload.get("delay_seconds", 3)), 300)),
-            "poll_seconds": max(5, min(int(payload.get("poll_seconds", 10)), 120)),
+            "delay_seconds": max(0, min(int(payload.get("delay_seconds", 1)), 300)),
+            "poll_seconds": max(5, min(int(payload.get("poll_seconds", 5)), 120)),
+            "parallelism": max(1, min(int(payload.get("parallelism", 2)), 3)),
             "completed": 0,
             "failed": 0,
             "cancel_requested": False,
@@ -72,7 +82,7 @@ class JobManager:
         }
         with self.lock:
             self.jobs[job_id] = job
-        self.executor.submit(self._run, client, job_id)
+        self.job_executor.submit(self._run, client, job_id)
         return self.public(job_id)
 
     def list(self) -> list[dict[str, Any]]:
@@ -132,35 +142,72 @@ class JobManager:
             job["status"] = "running"
             self._touch(job)
 
-        for batch in job["batches"]:
+        next_batch = 0
+        running: dict[Future[None], dict[str, Any]] = {}
+
+        while next_batch < len(job["batches"]) or running:
             with self.lock:
-                if job["cancel_requested"]:
-                    job["status"] = "cancelled"
-                    self._touch(job)
-                    return
-                batch["status"] = "running"
-                self._touch(job)
+                cancelled = job["cancel_requested"]
 
-            try:
-                path = self._run_batch(client, job, batch)
+            while not cancelled and next_batch < len(job["batches"]) and len(running) < job["parallelism"]:
+                batch = job["batches"][next_batch]
+                future = self.batch_executor.submit(self._execute_batch, client.fork(), job, batch)
+                running[future] = batch
+                next_batch += 1
+                if next_batch < len(job["batches"]) and job["delay_seconds"]:
+                    time.sleep(job["delay_seconds"])
                 with self.lock:
-                    batch["status"] = "complete"
-                    batch["file"] = str(path)
-                    job["completed"] += 1
-                    self._touch(job)
-            except Exception as exc:
-                with self.lock:
-                    batch["status"] = "failed"
-                    batch["error"] = str(exc)
-                    job["failed"] += 1
-                    self._touch(job)
+                    cancelled = job["cancel_requested"]
 
-            if batch["index"] < len(job["batches"]) and job["delay_seconds"]:
-                time.sleep(job["delay_seconds"])
+            if running:
+                done, _ = wait(running, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
+                    running.pop(future)
+                    future.result()
+            elif cancelled:
+                break
 
         with self.lock:
-            job["status"] = "complete" if job["failed"] == 0 else "complete_with_errors"
+            if job["cancel_requested"]:
+                for batch in job["batches"]:
+                    if batch["status"] == "queued":
+                        batch["status"] = "cancelled"
+                job["status"] = "cancelled"
+            else:
+                job["status"] = "complete" if job["failed"] == 0 else "complete_with_errors"
             self._touch(job)
+
+    def _execute_batch(
+        self,
+        client: CoresysClient,
+        job: dict[str, Any],
+        batch: dict[str, Any],
+    ) -> None:
+        with self.lock:
+            if job["cancel_requested"]:
+                batch["status"] = "cancelled"
+                self._touch(job)
+                return
+            batch["status"] = "running"
+            self._touch(job)
+
+        try:
+            path = self._run_batch(client, job, batch)
+            with self.lock:
+                batch["status"] = "complete"
+                batch["file"] = str(path)
+                job["completed"] += 1
+                self._touch(job)
+        except Exception as exc:
+            with self.lock:
+                batch["status"] = "failed"
+                batch["error"] = str(exc)
+                job["failed"] += 1
+                self._touch(job)
+
+    def shutdown(self) -> None:
+        self.job_executor.shutdown(wait=True, cancel_futures=True)
+        self.batch_executor.shutdown(wait=True, cancel_futures=True)
 
     def _run_batch(self, client: CoresysClient, job: dict[str, Any], batch: dict[str, Any]) -> Path:
         job_dir = self.download_root / job["id"]

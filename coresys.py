@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
@@ -118,7 +119,7 @@ def safe_filename(value: str, fallback: str) -> str:
 
 
 class CoresysClient:
-    def __init__(self) -> None:
+    def __init__(self, shared_context: dict[str, Any] | None = None) -> None:
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 Coresys Batch Downloader/1.0",
@@ -126,6 +127,20 @@ class CoresysClient:
         })
         self.username: str | None = None
         self._page_cache: dict[str, str] = {}
+        self._shared_context = shared_context or {
+            "lock": threading.RLock(),
+            "pod_context": None,
+        }
+
+    def fork(self) -> "CoresysClient":
+        """Create an independent HTTP pool with the same authenticated cookies."""
+        self.require_login()
+        client = CoresysClient(shared_context=self._shared_context)
+        client.session.headers.update(self.session.headers)
+        client.session.cookies.update(self.session.cookies)
+        client.username = self.username
+        client._page_cache = self._page_cache.copy()
+        return client
 
     def login(self, username: str, password: str, pin: str) -> dict[str, str]:
         if not re.fullmatch(r"\d{6}", pin):
@@ -174,6 +189,8 @@ class CoresysClient:
 
         self.username = username
         self._page_cache.clear()
+        with self._shared_context["lock"]:
+            self._shared_context["pod_context"] = None
         return {"username": username, "branch": self._extract_branch(login_response.text)}
 
     def _extract_branch(self, html: str) -> str:
@@ -302,13 +319,19 @@ class CoresysClient:
         )
 
     def _pod_context(self) -> tuple[str, str]:
-        html = self.get_page("pod_v2", refresh=True)
-        token_match = re.search(r"let auth_token\s*=\s*'([^']+)'", html)
-        userdata_match = re.search(r"userdata:\s*'((?:\\.|[^'])*)'", html)
-        if not token_match or not userdata_match:
-            raise CoresysError("Token Laporan POD V2 tidak ditemukan pada halaman portal.")
-        userdata = userdata_match.group(1).replace("\\'", "'")
-        return token_match.group(1), userdata
+        with self._shared_context["lock"]:
+            cached = self._shared_context["pod_context"]
+            if cached:
+                return cached
+            html = self.get_page("pod_v2", refresh=True)
+            token_match = re.search(r"let auth_token\s*=\s*'([^']+)'", html)
+            userdata_match = re.search(r"userdata:\s*'((?:\\.|[^'])*)'", html)
+            if not token_match or not userdata_match:
+                raise CoresysError("Token Laporan POD V2 tidak ditemukan pada halaman portal.")
+            userdata = userdata_match.group(1).replace("\\'", "'")
+            context = (token_match.group(1), userdata)
+            self._shared_context["pod_context"] = context
+            return context
 
     @staticmethod
     def pod_payload(start: str, end: str, filters: dict[str, Any]) -> dict[str, str]:

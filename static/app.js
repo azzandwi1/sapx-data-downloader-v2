@@ -231,10 +231,10 @@ function showWorkflow(workflow) {
   $("#workflow-description").textContent = config.description;
   $("#date-section").hidden = awbMode;
   $("#awb-section").hidden = !awbMode;
-  ["#date_from", "#date_to", "#batch_days", "#delay_seconds"].forEach(selector => {
+  ["#date_from", "#date_to", "#batch_days", "#delay_seconds", "#parallel_workers"].forEach(selector => {
     $(selector).disabled = awbMode;
   });
-  ["#awb_text", "#batch_size", "#awb_delay_seconds"].forEach(selector => {
+  ["#awb_text", "#batch_size", "#awb_delay_seconds", "#awb_parallel_workers"].forEach(selector => {
     $(selector).disabled = !awbMode;
   });
   $("#awb_text").required = awbMode;
@@ -269,11 +269,13 @@ async function startJob(event) {
       payload.awb_text = $("#awb_text").value;
       payload.batch_size = Number($("#batch_size").value);
       payload.delay_seconds = Number($("#awb_delay_seconds").value);
+      payload.parallelism = Number($("#awb_parallel_workers").value);
     } else {
       payload.date_from = $("#date_from").value;
       payload.date_to = $("#date_to").value;
       payload.batch_days = Number($("#batch_days").value);
       payload.delay_seconds = Number($("#delay_seconds").value);
+      payload.parallelism = Number($("#parallel_workers").value);
     }
     const result = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
     state.autoDownloadJobs.add(result.job.id);

@@ -57,7 +57,8 @@
               <label class="field"><span>Tanggal awal</span><input type="date" id="date_from" required></label>
               <label class="field"><span>Tanggal akhir</span><input type="date" id="date_to" required></label>
               <label class="field"><span>Batch per hari</span><input type="number" id="batch_days" min="1" max="366" value="7" required></label>
-              <label class="field"><span>Jeda antar batch</span><div class="input-suffix"><input type="number" id="delay_seconds" min="0" max="300" value="3"><span>detik</span></div></label>
+              <label class="field"><span>Jeda antar batch</span><div class="input-suffix"><input type="number" id="delay_seconds" min="0" max="300" value="1"><span>detik</span></div></label>
+              <label class="field"><span>Proses paralel</span><input type="number" id="parallel_workers" min="1" max="3" value="2"></label>
             </div>
             <div id="batch-preview" class="batch-preview"><i data-lucide="split"></i><span>Tentukan rentang tanggal untuk melihat pembagian batch.</span></div>
           </div>
@@ -67,7 +68,8 @@
             <label class="field full"><span>Nomor AWB</span><textarea id="awb_text" rows="12" placeholder="Tempel nomor AWB, satu nomor per baris"></textarea></label>
             <div class="field-grid compact-grid awb-settings">
               <label class="field"><span>Maksimum per file</span><input type="number" id="batch_size" value="10000" min="1" max="10000"></label>
-              <label class="field"><span>Jeda antar batch</span><div class="input-suffix"><input type="number" id="awb_delay_seconds" min="0" max="300" value="3"><span>detik</span></div></label>
+              <label class="field"><span>Jeda antar batch</span><div class="input-suffix"><input type="number" id="awb_delay_seconds" min="0" max="300" value="1"><span>detik</span></div></label>
+              <label class="field"><span>Proses paralel</span><input type="number" id="awb_parallel_workers" min="1" max="3" value="2"></label>
             </div>
             <div id="awb-preview" class="batch-preview"><i data-lucide="files"></i><span>Daftar akan otomatis dipecah maksimal 10.000 AWB per file.</span></div>
           </div>

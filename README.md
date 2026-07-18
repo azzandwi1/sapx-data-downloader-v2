@@ -11,6 +11,8 @@ Aplikasi lokal untuk membagi dan mengantrekan export dari portal CORESYS:
 - Laporan POD > Export Laporan POD V2
 - Laporan POD > Laporan POD by AWB
 
+Batch dapat diproses paralel dengan batas satu sampai tiga proses. Preset dua proses memakai koneksi HTTP terpisah dengan sesi login yang sama, sehingga batch berikutnya dapat berjalan saat batch lain menunggu server atau sedang mengunduh.
+
 ## Menjalankan
 
 ```powershell
@@ -34,7 +36,7 @@ File hasil disimpan di `downloads/<job-id>/`. Monitoring Pickup dan Pickup Manua
 
 ## Catatan operasional
 
-- Antrean lokal memakai satu worker agar permintaan tidak membanjiri portal.
+- Scheduler membatasi maksimal tiga batch aktif secara global agar percepatan tetap terkontrol.
 - Jika portal mengakhiri sesi, login ulang lalu buat pekerjaan baru.
 - POD V2 tetap tunduk pada batas antrean dan ukuran file milik server CORESYS.
 - Jangan menjalankan aplikasi ini pada host publik tanpa menambahkan autentikasi lokal dan HTTPS.
