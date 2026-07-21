@@ -98,10 +98,15 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch {
+    throw new Error("Backend lokal terputus. Jalankan ulang aplikasi, lalu muat ulang halaman ini.");
+  }
   const data = await response.json();
   if (!response.ok || data.ok === false) throw new Error(data.error || "Permintaan gagal.");
   return data;
@@ -117,6 +122,35 @@ function toast(message) {
 
 function refreshIcons() {
   if (window.lucide) window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
+}
+
+function setupSecretToggles() {
+  ["login-password", "login-pin"].forEach(id => {
+    const input = document.getElementById(id);
+    if (!input || input.parentElement?.classList.contains("secret-input")) return;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "secret-input";
+    input.parentNode.insertBefore(wrapper, input);
+    wrapper.appendChild(input);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secret-toggle";
+    button.title = "Tampilkan";
+    button.setAttribute("aria-label", `Tampilkan ${id === "login-pin" ? "PIN" : "password"}`);
+    button.innerHTML = '<i data-lucide="eye"></i>';
+    button.addEventListener("click", () => {
+      const visible = input.type === "text";
+      input.type = visible ? "password" : "text";
+      button.title = visible ? "Tampilkan" : "Sembunyikan";
+      button.setAttribute("aria-label", `${visible ? "Tampilkan" : "Sembunyikan"} ${id === "login-pin" ? "PIN" : "password"}`);
+      button.innerHTML = `<i data-lucide="${visible ? "eye" : "eye-off"}"></i>`;
+      refreshIcons();
+      input.focus();
+    });
+    wrapper.appendChild(button);
+  });
 }
 
 function setSession(authenticated, username = "") {
@@ -445,6 +479,7 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+  setupSecretToggles();
   showWorkflow("pickup");
   refreshIcons();
   try {

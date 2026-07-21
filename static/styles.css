@@ -71,6 +71,12 @@ nav { padding-top: 15px; }
 .field textarea { resize: vertical; padding: 11px; line-height: 1.55; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(25,113,91,.11); }
 .field.full { grid-column: 1 / -1; }
+.secret-input { position: relative; }
+.secret-input input { padding-right: 42px; }
+.secret-toggle { position: absolute; top: 4px; right: 4px; width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 3px; background: transparent; color: #6f7b78; cursor: pointer; }
+.secret-toggle:hover { background: #edf2f0; color: var(--green); }
+.secret-toggle:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.secret-toggle svg { width: 16px; height: 16px; }
 .input-suffix { display: flex; }
 .input-suffix input { border-radius: 4px 0 0 4px; }
 .input-suffix span { min-width: 52px; display: grid; place-items: center; border: 1px solid #cfd7d5; border-left: 0; border-radius: 0 4px 4px 0; background: #f2f4f3; color: var(--muted); font-size: 10px; }
