@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import sys
 import threading
 import uuid
@@ -36,6 +37,19 @@ app.config.update(
 clients: dict[str, CoresysClient] = {}
 clients_lock = threading.RLock()
 jobs = JobManager(DATA_ROOT / "downloads")
+
+
+def available_port(preferred: int, attempts: int = 20) -> int:
+    for candidate in range(preferred, preferred + attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return candidate
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 def current_client() -> CoresysClient:
@@ -151,7 +165,8 @@ def download(job_id: str, batch_index: int):
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5177"))
+    configured_port = os.environ.get("PORT")
+    port = int(configured_port) if configured_port else available_port(5177)
     if getattr(sys, "frozen", False):
         threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

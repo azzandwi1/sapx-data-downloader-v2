@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
+from app import available_port
 from coresys import CoresysClient, format_awb_text, normalize_awbs, split_awbs, split_date_range
 from jobs import JobManager
 
@@ -27,6 +28,16 @@ class DateBatchTests(unittest.TestCase):
     def test_rejects_reverse_range(self):
         with self.assertRaises(ValueError):
             split_date_range("2026-02-02", "2026-02-01", 7)
+
+
+class PortTests(unittest.TestCase):
+    def test_skips_an_occupied_port(self):
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            occupied = int(listener.getsockname()[1])
+            self.assertNotEqual(available_port(occupied, attempts=1), occupied)
 
 
 class AwbBatchTests(unittest.TestCase):
