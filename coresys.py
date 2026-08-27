@@ -23,6 +23,7 @@ WORKFLOW_PAGES = {
     "pickup_manual": f"{BASE_URL}/pickup_manual/monitoring_list",
     "pod_v2": f"{BASE_URL}/pod_report_v2/",
     "pod_awb": f"{BASE_URL}/report/pod_by_awb",
+    "tracking_history": f"{BASE_URL}/tracking/focus",
 }
 
 
@@ -62,6 +63,67 @@ class SelectParser(HTMLParser):
             self._select_id = None
 
 
+class HistoryTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "tr":
+            self._row = []
+        elif tag in {"td", "th"} and self._row is not None:
+            self._cell = []
+        elif tag == "br" and self._cell is not None:
+            self._cell.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self._cell is not None:
+            self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            if any(self._row):
+                self.rows.append(self._row)
+            self._row = None
+
+
+def parse_tracking_history(html: str) -> list[dict[str, Any]]:
+    marker = html.find(">Riwayat</h4>")
+    if marker < 0:
+        marker = html.find("Riwayat")
+    if marker < 0:
+        return []
+    table = re.search(r"<table\b.*?</table>", html[marker:], re.I | re.S)
+    if not table:
+        return []
+
+    parser = HistoryTableParser()
+    parser.feed(table.group(0))
+    records: list[dict[str, Any]] = []
+    for cells in parser.rows:
+        if len(cells) < 7 or cells[0] == "#":
+            continue
+        try:
+            number = int(cells[0])
+        except ValueError:
+            continue
+        records.append({
+            "no": number,
+            "process": cells[1],
+            "document": cells[2],
+            "reference": cells[3],
+            "datetime": cells[4],
+            "location": cells[5],
+            "note": cells[6],
+        })
+    return records
+
+
 @dataclass(frozen=True)
 class DateBatch:
     start: date
@@ -99,6 +161,37 @@ def normalize_awbs(raw: str) -> list[str]:
     return result
 
 
+def normalize_awb_targets(raw: str) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, str]] = []
+    for raw_line in raw.upper().splitlines():
+        line = raw_line.replace("**", "").strip().strip("|").strip()
+        if not line or re.fullmatch(r"[-|:\s]+", line):
+            continue
+        if "AWB" in line and "TLC" in line:
+            continue
+
+        columns = [value.strip() for value in re.split(r"\t+|\s{2,}|\s+\|\s+", line) if value.strip()]
+        if len(columns) == 1:
+            whitespace = columns[0].split()
+            if len(whitespace) == 2 and re.fullmatch(r"[A-Z0-9]{2,10}", whitespace[1]):
+                columns = whitespace
+
+        if len(columns) >= 2 and re.fullmatch(r"[A-Z0-9]{2,10}", columns[1]):
+            pairs = [(columns[0], columns[1])]
+        else:
+            pairs = [(awb, "") for awb in normalize_awbs(line)]
+
+        for awb, tlc in pairs:
+            key = (awb, tlc)
+            if awb and key not in seen:
+                seen.add(key)
+                result.append({"awb": awb, "tlc": tlc})
+    if not result:
+        raise ValueError("Masukkan minimal satu nomor AWB.")
+    return result
+
+
 def split_awbs(awbs: list[str], size: int = 10_000) -> list[list[str]]:
     if not awbs:
         raise ValueError("Masukkan minimal satu nomor AWB.")
@@ -131,6 +224,7 @@ class CoresysClient:
         self._shared_context = shared_context or {
             "lock": threading.RLock(),
             "pod_context": None,
+            "history_cache": {},
         }
 
     def fork(self) -> "CoresysClient":
@@ -192,6 +286,7 @@ class CoresysClient:
         self._page_cache.clear()
         with self._shared_context["lock"]:
             self._shared_context["pod_context"] = None
+            self._shared_context["history_cache"] = {}
         return {"username": username, "branch": self._extract_branch(login_response.text)}
 
     def _extract_branch(self, html: str) -> str:
@@ -326,6 +421,43 @@ class CoresysClient:
                 "Referer": f"{BASE_URL}/report/pod_by_awb",
             },
         )
+
+    def fetch_tracking_history(self, awb: str) -> list[dict[str, Any]]:
+        self.require_login()
+        with self._shared_context["lock"]:
+            cache = self._shared_context.setdefault("history_cache", {})
+            cached = cache.get(awb)
+            if cached and time.monotonic() - cached[0] < 300:
+                return [record.copy() for record in cached[1]]
+
+        last_error: requests.RequestException | None = None
+        for attempt in range(3):
+            try:
+                response = self.session.post(
+                    f"{BASE_URL}/tracking/getriwayat",
+                    data={"id": awb},
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Origin": BASE_URL,
+                        "Referer": f"{BASE_URL}/tracking/focus",
+                    },
+                    timeout=90,
+                )
+                response.raise_for_status()
+                if "/user/login" in response.url:
+                    raise CoresysError("Sesi portal berakhir. Silakan login ulang.")
+                records = parse_tracking_history(response.text)
+                with self._shared_context["lock"]:
+                    cache = self._shared_context.setdefault("history_cache", {})
+                    cache[awb] = (time.monotonic(), records)
+                    while len(cache) > 2_000:
+                        cache.pop(next(iter(cache)))
+                return [record.copy() for record in records]
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(attempt + 1)
+        raise CoresysError(f"Gagal mengambil history {awb} setelah 3 percobaan: {last_error}") from last_error
 
     def _pod_context(self) -> tuple[str, str]:
         with self._shared_context["lock"]:

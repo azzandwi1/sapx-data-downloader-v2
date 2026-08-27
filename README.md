@@ -10,6 +10,7 @@ Aplikasi lokal untuk membagi dan mengantrekan export dari portal CORESYS:
 - Pickup Manual > Monitoring Pickup
 - Laporan POD > Export Laporan POD V2
 - Laporan POD > Laporan POD by AWB
+- Trace & Tracking > Export History AWB
 
 Batch dapat diproses paralel dengan batas satu sampai tiga proses. Preset dua proses memakai koneksi HTTP terpisah dengan sesi login yang sama, sehingga batch berikutnya dapat berjalan saat batch lain menunggu server atau sedang mengunduh.
 
@@ -33,6 +34,12 @@ Pilihan termudah adalah mengunduh `SAPX-Data-Downloader.exe` dari halaman [Relea
 Pengguna yang menjalankan source code dapat klik dua kali `start-local.bat`. Skrip membuat virtual environment, memasang dependency, menjalankan backend, dan membuka browser.
 
 File hasil disimpan di `downloads/<job-id>/`. Monitoring Pickup dan Pickup Manual diunduh langsung per batch. POD V2 membuat proses pada server laporan, memantau status, lalu mengambil file saat selesai. POD by AWB menghapus duplikat dan membagi daftar maksimal 10.000 AWB per file.
+
+Export History AWB menyediakan tiga jenis hasil. `Milestone tujuan` menerima kolom `No. AWB` dan `TLC Tujuan`, lalu menghasilkan tanggal verifikasi, Outgoing SMU pertama, Incoming SMU pertama di TLC tujuan, dan POD pertama di TLC tujuan. `ID kurir POD pertama` hanya memerlukan kolom `No. AWB` dan mengambil teks setelah garis miring terakhir pada kolom `Lokasi / Oleh` dari aktivitas POD pertama. Sheet `Ringkasan` dan `Semua History` dapat diaktifkan sebagai output tambahan. History yang sama disimpan dalam cache memori selama lima menit.
+
+`Verifikasi percobaan pickup` hanya memerlukan kolom `No. AWB`. Hasilnya merangkum permintaan pickup, percobaan pertama, kurir, alasan, jumlah percobaan, jumlah status belum ready, pickup berhasil, pemenuhan SLA H+1, dan status verifikasi otomatis.
+
+Trace & Tracking mendukung 1-12 request paralel dengan nilai awal 9. Setiap request yang mengalami gangguan jaringan sementara dicoba ulang sampai tiga kali.
 
 ## Catatan operasional
 

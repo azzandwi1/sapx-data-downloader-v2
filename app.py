@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file, session
 
 from coresys import CoresysClient, CoresysError, normalize_awbs
+from history_export import read_awb_targets_workbook
 from jobs import JobManager
 
 
@@ -120,6 +121,21 @@ def options(workflow: str):
     return jsonify({"ok": True, "options": current_client().get_options(workflow)})
 
 
+@app.post("/api/tracking-history/import")
+def import_tracking_history_file():
+    current_client()
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        raise ValueError("Pilih file Excel terlebih dahulu.")
+    if Path(upload.filename).suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise ValueError("Format file harus .xlsx atau .xlsm.")
+    tracking_mode = request.form.get("mode", "milestone")
+    if tracking_mode not in {"milestone", "courier_pod", "pickup_attempt"}:
+        raise ValueError("Jenis data trace & tracking tidak dikenal.")
+    targets = read_awb_targets_workbook(upload.stream, require_tlc=tracking_mode == "milestone")
+    return jsonify({"ok": True, "targets": targets, "count": len(targets), "filename": Path(upload.filename).name})
+
+
 @app.get("/api/jobs")
 def list_jobs():
     current_client()
@@ -130,7 +146,23 @@ def list_jobs():
 def create_job():
     client = current_client()
     payload = request.get_json(force=True)
-    if payload.get("workflow") == "pod_awb":
+    if payload.get("workflow") == "tracking_history":
+        items = payload.get("awb_targets")
+        if not isinstance(items, list):
+            raise ValueError("Unggah file Excel terlebih dahulu.")
+        tracking_mode = payload.get("tracking_mode", "milestone")
+        if tracking_mode not in {"milestone", "courier_pod", "pickup_attempt"}:
+            raise ValueError("Jenis data trace & tracking tidak dikenal.")
+        targets = [
+            {"awb": str(item.get("awb", "")).strip().upper(), "tlc": str(item.get("tlc", "")).strip().upper()}
+            for item in items if isinstance(item, dict) and str(item.get("awb", "")).strip()
+        ]
+        if not targets:
+            raise ValueError("File Excel tidak memiliki nomor AWB yang dapat diproses.")
+        if tracking_mode == "milestone" and any(not item["tlc"] for item in targets):
+            raise ValueError("TLC Tujuan wajib diisi untuk mode Milestone tujuan.")
+        payload["awb_targets"] = targets
+    elif payload.get("workflow") == "pod_awb":
         payload["awbs"] = normalize_awbs(str(payload.get("awb_text", "")))
     job = jobs.create(client, payload)
     return jsonify({"ok": True, "job": job}), 201

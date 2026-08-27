@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from coresys import CoresysClient, CoresysError, split_awbs, split_date_range
+from history_export import export_tracking_history
 
 
 class JobManager:
@@ -31,10 +32,25 @@ class JobManager:
 
     def create(self, client: CoresysClient, payload: dict[str, Any]) -> dict[str, Any]:
         workflow = payload.get("workflow")
-        if workflow not in {"pickup", "pickup_manual", "pod_v2", "pod_awb"}:
+        if workflow not in {"pickup", "pickup_manual", "pod_v2", "pod_awb", "tracking_history"}:
             raise ValueError("Workflow tidak dikenal.")
 
-        if workflow == "pod_awb":
+        if workflow == "tracking_history":
+            awb_targets = payload.get("awb_targets") or []
+            if not awb_targets:
+                raise ValueError("Masukkan minimal satu nomor AWB.")
+            tracking_mode = payload.get("tracking_mode", "milestone")
+            if tracking_mode not in {"milestone", "courier_pod", "pickup_attempt"}:
+                raise ValueError("Jenis data trace & tracking tidak dikenal.")
+            batches = [{
+                "index": 1,
+                "label": f"{len(awb_targets):,} AWB ke satu file Excel",
+                "awb_targets": awb_targets,
+                "progress_unit": "awb",
+                "processed": 0,
+                "item_total": len(awb_targets),
+            }]
+        elif workflow == "pod_awb":
             awbs = payload.get("awbs") or []
             batches_data = split_awbs(awbs, int(payload.get("batch_size", 10_000)))
             batches = []
@@ -61,6 +77,7 @@ class JobManager:
             ]
 
         job_id = uuid.uuid4().hex[:12]
+        max_parallelism = 12 if workflow == "tracking_history" else 3
         job = {
             "id": job_id,
             "workflow": workflow,
@@ -71,7 +88,10 @@ class JobManager:
             "export": payload.get("export", ""),
             "delay_seconds": max(0, min(int(payload.get("delay_seconds", 1)), 300)),
             "poll_seconds": max(5, min(int(payload.get("poll_seconds", 5)), 120)),
-            "parallelism": max(1, min(int(payload.get("parallelism", 2)), 3)),
+            "parallelism": max(1, min(int(payload.get("parallelism", 2)), max_parallelism)),
+            "include_summary": bool(payload.get("include_summary", True)),
+            "include_history": bool(payload.get("include_history", True)),
+            "tracking_mode": payload.get("tracking_mode", "milestone"),
             "completed": 0,
             "failed": 0,
             "cancel_requested": False,
@@ -96,7 +116,7 @@ class JobManager:
                 raise KeyError(job_id)
             job = self.jobs[job_id]
             public_batches = [
-                {key: value for key, value in batch.items() if key != "awbs"}
+                {key: value for key, value in batch.items() if key not in {"awbs", "awb_targets"}}
                 for batch in job["batches"]
             ]
             return {
@@ -134,6 +154,14 @@ class JobManager:
             batch = job["batches"][batch_index - 1]
             batch["downloaded"] = downloaded
             batch["total"] = total
+            self._touch(job)
+
+    def _item_progress(self, job_id: str, batch_index: int, processed: int, total: int) -> None:
+        with self.lock:
+            job = self.jobs[job_id]
+            batch = job["batches"][batch_index - 1]
+            batch["processed"] = processed
+            batch["item_total"] = total
             self._touch(job)
 
     def _run(self, client: CoresysClient, job_id: str) -> None:
@@ -232,6 +260,33 @@ class JobManager:
                     if records == 0:
                         batch["warning"] = "Portal mengembalikan file valid, tetapi tidak ada baris data untuk AWB pada batch ini."
                     self._touch(job)
+            return path
+
+        if job["workflow"] == "tracking_history":
+            path, found, missing, request_failed = export_tracking_history(
+                client,
+                batch["awb_targets"],
+                job_dir / f"{prefix}_tracking_history.xlsx",
+                parallelism=job["parallelism"],
+                delay_seconds=job["delay_seconds"],
+                include_summary=job["include_summary"],
+                include_history=job["include_history"],
+                tracking_mode=job["tracking_mode"],
+                progress=lambda processed, total: self._item_progress(
+                    job["id"], batch["index"], processed, total
+                ),
+                cancelled=lambda: bool(job["cancel_requested"]),
+            )
+            with self.lock:
+                batch["records"] = found
+                batch["missing"] = missing
+                batch["request_failed"] = request_failed
+                if missing or request_failed:
+                    batch["warning"] = (
+                        f"{found:,} AWB ditemukan, {missing:,} tidak ditemukan, "
+                        f"dan {request_failed:,} gagal diambil. Detail tersedia di sheet Ringkasan."
+                    )
+                self._touch(job)
             return path
 
         submitted = client.submit_pod_v2(batch["from"], batch["to"], job["filters"])

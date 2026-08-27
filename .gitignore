@@ -8,3 +8,6 @@ dist/
 *.log
 downloads/*
 !downloads/.gitkeep
+.codex-tmp/
+.playwright-cli/
+outputs/

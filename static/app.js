@@ -60,6 +60,13 @@ const workflowConfig = {
     exports: [["pod_awb", "Export Data"]],
     fields: [],
   },
+  tracking_history: {
+    title: "Export History AWB",
+    breadcrumb: "Trace & Tracking / Export History AWB",
+    description: "Ambil seluruh riwayat banyak AWB dan gabungkan ke dalam satu file Excel.",
+    exports: [["tracking_history", "Excel History"]],
+    fields: [],
+  },
 };
 
 const workflowLabels = {
@@ -67,6 +74,7 @@ const workflowLabels = {
   pickup_manual: "Pickup Manual",
   pod_v2: "Laporan POD V2",
   pod_awb: "POD by AWB",
+  tracking_history: "History AWB",
 };
 
 const AUTO_JOBS_KEY = "coresys-auto-download-jobs";
@@ -91,6 +99,9 @@ const state = {
   options: {},
   authenticated: false,
   poller: null,
+  trackingTargets: [],
+  trackingFileName: "",
+  trackingMode: "milestone",
   autoDownloadJobs: storedSet(AUTO_JOBS_KEY),
   downloadedBatches: storedSet(DOWNLOADED_BATCHES_KEY),
 };
@@ -174,11 +185,19 @@ function parseAwbs() {
 }
 
 function updateAwbPreview() {
-  const count = parseAwbs().length;
+  const historyMode = state.workflow === "tracking_history";
+  const targets = historyMode ? state.trackingTargets : [];
+  const count = historyMode ? targets.length : parseAwbs().length;
   const size = Math.max(1, Math.min(10000, Number($("#batch_size").value) || 10000));
   const batches = count ? Math.ceil(count / size) : 0;
   $("#awb-count").textContent = `${count.toLocaleString("id-ID")} AWB unik`;
-  $("#awb-preview span").textContent = count
+  $("#awb-preview span").textContent = historyMode
+    ? (count
+      ? `${state.trackingFileName}: ${count.toLocaleString("id-ID")} AWB siap diproses.`
+      : (state.trackingMode !== "milestone"
+        ? "Pilih file Excel yang memiliki kolom No. AWB."
+        : "Pilih file Excel yang memiliki kolom No. AWB dan TLC Tujuan."))
+    : count
     ? `${count.toLocaleString("id-ID")} AWB akan menghasilkan ${batches} file, maksimal ${size.toLocaleString("id-ID")} AWB per file.`
     : "Daftar akan otomatis dipecah maksimal 10.000 AWB per file.";
 }
@@ -260,7 +279,8 @@ function showWorkflow(workflow) {
   }
 
   const config = workflowConfig[workflow];
-  const awbMode = workflow === "pod_awb";
+  const awbMode = ["pod_awb", "tracking_history"].includes(workflow);
+  const historyMode = workflow === "tracking_history";
   $("#page-title").textContent = config.title;
   $("#breadcrumb").textContent = config.breadcrumb;
   $("#workflow-description").textContent = config.description;
@@ -274,7 +294,23 @@ function showWorkflow(workflow) {
     const element = $(selector);
     if (element) element.disabled = !awbMode;
   });
-  $("#awb_text").required = awbMode;
+  $("#awb_text").required = awbMode && !historyMode;
+  $("#awb-text-field").hidden = historyMode;
+  $("#tracking-file-field").hidden = !historyMode;
+  $("#tracking-mode-options").hidden = !historyMode;
+  $("#tracking-output-options").hidden = !historyMode;
+  $("#awb-section-title").textContent = historyMode
+    ? (state.trackingMode === "pickup_attempt"
+      ? "Daftar AWB untuk verifikasi pickup"
+      : (state.trackingMode === "courier_pod" ? "Daftar AWB untuk ID kurir POD" : "File AWB dan TLC tujuan"))
+    : "Daftar nomor AWB";
+  $("#tracking-file-label").textContent = state.trackingMode !== "milestone"
+    ? "File Excel daftar AWB"
+    : "File Excel AWB dan TLC tujuan";
+  $("#batch_size").closest(".field").hidden = historyMode;
+  $("#awb_delay_seconds").value = historyMode ? "0" : "1";
+  $("#awb_parallel_workers").max = historyMode ? "12" : "3";
+  $("#awb_parallel_workers").value = historyMode ? "9" : "2";
   $("#filter-section").hidden = config.fields.length === 0;
   $("#export-section").hidden = awbMode;
   $("#start-button span").textContent = awbMode ? "Export & download" : "Mulai download";
@@ -284,6 +320,7 @@ function showWorkflow(workflow) {
   renderFields(config);
   renderExports(config);
   updateBatchPreview();
+  updateAwbPreview();
   if (config.fields.length && state.authenticated) loadOptions(workflow);
   refreshIcons();
 }
@@ -302,7 +339,15 @@ async function startJob(event) {
       export: document.querySelector('input[name="export"]:checked')?.value || "",
       filters: collectFilters(),
     };
-    if (state.workflow === "pod_awb") {
+    if (state.workflow === "tracking_history") {
+      if (!state.trackingTargets.length) throw new Error("Unggah file Excel terlebih dahulu.");
+      payload.awb_targets = state.trackingTargets;
+      payload.tracking_mode = state.trackingMode;
+      payload.delay_seconds = Number($("#awb_delay_seconds").value);
+      payload.parallelism = Number($("#awb_parallel_workers")?.value || 1);
+      payload.include_summary = $("#include_summary").checked;
+      payload.include_history = $("#include_history").checked;
+    } else if (state.workflow === "pod_awb") {
       payload.awb_text = $("#awb_text").value;
       payload.batch_size = Number($("#batch_size").value);
       payload.delay_seconds = Number($("#awb_delay_seconds").value);
@@ -342,18 +387,23 @@ function renderJobs(jobs) {
   $("#jobs-empty").hidden = jobs.length > 0;
   $("#jobs-list").innerHTML = jobs.map(job => {
     const done = job.completed + job.failed;
-    const progress = job.batch_count ? Math.round(done / job.batch_count * 100) : 0;
+    const itemBatch = job.workflow === "tracking_history" ? job.batches[0] : null;
+    const progress = itemBatch?.item_total
+      ? Math.round((itemBatch.processed || 0) / itemBatch.item_total * 100)
+      : (job.batch_count ? Math.round(done / job.batch_count * 100) : 0);
     const active = ["queued", "running"].includes(job.status);
     return `<article class="job">
       <div class="job-summary">
-        <div class="job-title"><span class="job-icon"><i data-lucide="${job.workflow === "pod_awb" ? "scan-line" : "download"}"></i></span><div><strong>${workflowLabels[job.workflow]}</strong><small>${job.id} · ${job.batch_count} batch · ${job.created_at.replace("T", " ")}</small></div></div>
+        <div class="job-title"><span class="job-icon"><i data-lucide="${job.workflow === "pod_awb" ? "scan-line" : (job.workflow === "tracking_history" ? "route" : "download")}"></i></span><div><strong>${workflowLabels[job.workflow]}</strong><small>${job.id} · ${job.batch_count} batch · ${job.created_at.replace("T", " ")}</small></div></div>
         <span class="status ${job.status}">${statusLabel(job.status)}</span>
-        <div class="job-progress"><div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div><small>${done}/${job.batch_count} batch selesai</small></div>
+        <div class="job-progress"><div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div><small>${itemBatch?.item_total ? `${itemBatch.processed || 0}/${itemBatch.item_total} AWB diproses` : `${done}/${job.batch_count} batch selesai`}</small></div>
         <div class="job-actions">${active ? `<button class="button danger cancel-job" data-id="${job.id}"><i data-lucide="square"></i>Batalkan</button>` : ""}</div>
       </div>
       <table class="batch-table"><thead><tr><th>Batch</th><th>Status</th><th>Progres</th><th>Hasil</th></tr></thead><tbody>
         ${job.batches.map(batch => {
-          const progressText = batch.total ? `${bytes(batch.downloaded)} / ${bytes(batch.total)}` : (batch.downloaded ? bytes(batch.downloaded) : "-");
+          const progressText = batch.progress_unit === "awb"
+            ? `${batch.processed || 0} / ${batch.item_total || 0} AWB`
+            : (batch.total ? `${bytes(batch.downloaded)} / ${bytes(batch.total)}` : (batch.downloaded ? bytes(batch.downloaded) : "-"));
           const warning = batch.warning ? `<small class="warning-text">${escapeHtml(batch.warning)}</small>` : "";
           const result = batch.file ? `<a class="download-link" href="/api/jobs/${job.id}/batches/${batch.index}/download">Unduh file</a>${warning}` : (batch.error ? `<span class="error-text" title="${escapeHtml(batch.error)}">${escapeHtml(batch.error.slice(0, 80))}</span>` : "-");
           return `<tr><td>${escapeHtml(batch.label)}</td><td><span class="status ${batch.status}">${statusLabel(batch.status)}</span></td><td>${progressText}</td><td>${result}</td></tr>`;
@@ -443,6 +493,47 @@ async function login(event) {
   }
 }
 
+async function importTrackingFile(event) {
+  const file = event.target.files?.[0];
+  state.trackingTargets = [];
+  state.trackingFileName = "";
+  updateAwbPreview();
+  if (!file) return;
+  event.target.disabled = true;
+  $("#awb-preview span").textContent = "Membaca file Excel...";
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("mode", state.trackingMode);
+    const response = await fetch("/api/tracking-history/import", { method: "POST", body: form });
+    const result = await response.json();
+    if (!response.ok || result.ok === false) throw new Error(result.error || "File Excel tidak dapat dibaca.");
+    state.trackingTargets = result.targets;
+    state.trackingFileName = result.filename;
+    updateAwbPreview();
+  } catch (error) {
+    event.target.value = "";
+    toast(error.message);
+    updateAwbPreview();
+  } finally {
+    event.target.disabled = false;
+  }
+}
+
+function changeTrackingMode(event) {
+  state.trackingMode = event.target.value;
+  state.trackingTargets = [];
+  state.trackingFileName = "";
+  $("#tracking_file").value = "";
+  $("#tracking-file-label").textContent = state.trackingMode !== "milestone"
+    ? "File Excel daftar AWB"
+    : "File Excel AWB dan TLC tujuan";
+  $("#awb-section-title").textContent = state.trackingMode === "pickup_attempt"
+    ? "Daftar AWB untuk verifikasi pickup"
+    : (state.trackingMode === "courier_pod" ? "Daftar AWB untuk ID kurir POD" : "File AWB dan TLC tujuan");
+  updateAwbPreview();
+}
+
 async function logout() {
   await api("/api/logout", { method: "POST", body: "{}" });
   setSession(false);
@@ -459,11 +550,23 @@ function bindEvents() {
   $("#date_to").addEventListener("change", updateBatchPreview);
   $("#batch_days").addEventListener("input", updateBatchPreview);
   $("#awb_text").addEventListener("input", updateAwbPreview);
+  $("#tracking_file").addEventListener("change", importTrackingFile);
+  $$("input[name='tracking_mode']").forEach(input => input.addEventListener("change", changeTrackingMode));
   $("#batch_size").addEventListener("input", updateAwbPreview);
   $("#reset-button").addEventListener("click", () => {
     $("#workflow-form").reset();
     $("#batch_days").value = workflowConfig[state.workflow]?.batchDays || 7;
     $("#batch_days").max = state.workflow === "pod_v2" ? "31" : "366";
+    if (state.workflow === "tracking_history") {
+      state.trackingMode = "milestone";
+      state.trackingTargets = [];
+      state.trackingFileName = "";
+      $("#tracking_file").value = "";
+      $("#tracking-file-label").textContent = "File Excel AWB dan TLC tujuan";
+      $("#awb-section-title").textContent = "File AWB dan TLC tujuan";
+      $("#include_summary").checked = false;
+      $("#include_history").checked = false;
+    }
     updateBatchPreview();
     updateAwbPreview();
   });
