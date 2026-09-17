@@ -24,6 +24,7 @@ WORKFLOW_PAGES = {
     "pod_v2": f"{BASE_URL}/pod_report_v2/",
     "pod_awb": f"{BASE_URL}/report/pod_by_awb",
     "tracking_history": f"{BASE_URL}/tracking/focus",
+    "tracking_focus": f"{BASE_URL}/tracking/focus",
 }
 
 
@@ -120,6 +121,92 @@ def parse_tracking_history(html: str) -> list[dict[str, Any]]:
             "datetime": cells[4],
             "location": cells[5],
             "note": cells[6],
+        })
+    return records
+
+
+def extract_sla_info(detail_status_text: str) -> tuple[str, str, str]:
+    m1 = re.search(r"Max SLA\s*:\s*(.*?)(?=\s*Shipping Duration|\s*Status|$)", detail_status_text, re.I)
+    m2 = re.search(r"Shipping Duration\s*:\s*(.*?)(?=\s*Status|$)", detail_status_text, re.I)
+    m3 = re.search(r"Status\s*:\s*(.*)$", detail_status_text, re.I)
+
+    max_sla = m1.group(1).strip() if m1 else ""
+    duration = m2.group(1).strip() if m2 else ""
+    sla_status = m3.group(1).strip() if m3 else ""
+    return max_sla, duration, sla_status
+
+
+class TrackingFocusTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "tr":
+            self._row = []
+        elif tag in {"td", "th"} and self._row is not None:
+            self._cell = []
+        elif tag == "br" and self._cell is not None:
+            self._cell.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self._cell is not None:
+            self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            if any(self._row):
+                self.rows.append(self._row)
+            self._row = None
+
+
+def parse_tracking_focus_html(html: str) -> list[dict[str, Any]]:
+    table = re.search(r"<table\b.*?</table>", html, re.I | re.S)
+    if not table:
+        return []
+
+    parser = TrackingFocusTableParser()
+    parser.feed(table.group(0))
+    records: list[dict[str, Any]] = []
+    for cells in parser.rows:
+        if len(cells) < 19 or cells[0] == "No":
+            continue
+        try:
+            number = int(cells[0])
+        except ValueError:
+            continue
+
+        detail_status = cells[15].strip()
+        max_sla, duration, sla_status = extract_sla_info(detail_status)
+
+        records.append({
+            "no": number,
+            "awb_no": cells[1].replace(";", "").strip(),
+            "reference_no": cells[2].strip(),
+            "master_no": cells[3].strip(),
+            "date": cells[4].strip(),
+            "origin": cells[5].strip(),
+            "origin_district": cells[6].strip(),
+            "destination": cells[7].strip(),
+            "destination_city": cells[8].strip(),
+            "service_type": cells[9].strip(),
+            "transaction_type": cells[10].strip(),
+            "weight_kg": cells[11].strip(),
+            "koli": cells[12].strip(),
+            "invoice_no": cells[13].strip(),
+            "status": cells[14].strip(),
+            "detail_status": detail_status,
+            "max_sla": max_sla,
+            "shipping_duration": duration,
+            "sla_status": sla_status,
+            "pickup_cn_no": cells[16].replace(";", "").strip(),
+            "created_by": cells[17].replace(";", "").strip(),
+            "pod_by": cells[18].replace(";", "").strip(),
         })
     return records
 
@@ -458,6 +545,42 @@ class CoresysClient:
                 if attempt < 2:
                     time.sleep(attempt + 1)
         raise CoresysError(f"Gagal mengambil history {awb} setelah 3 percobaan: {last_error}") from last_error
+
+    def fetch_tracking_focus_batch(
+        self,
+        keys: list[str],
+        search_by: str = "a.reference_no",
+    ) -> list[dict[str, Any]]:
+        self.require_login()
+        if not keys:
+            return []
+
+        last_error: requests.RequestException | None = None
+        for attempt in range(3):
+            try:
+                response = self.session.post(
+                    f"{BASE_URL}/tracking/show_list_data_tracking/",
+                    data={
+                        "val[]": keys,
+                        "key": search_by,
+                        "key_rowstate": "0",
+                    },
+                    headers={
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Origin": BASE_URL,
+                        "Referer": f"{BASE_URL}/tracking/focus",
+                    },
+                    timeout=90,
+                )
+                response.raise_for_status()
+                if "/user/login" in response.url:
+                    raise CoresysError("Sesi portal berakhir. Silakan login ulang.")
+                return parse_tracking_focus_html(response.text)
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(attempt + 1)
+        raise CoresysError(f"Gagal mengambil data tracking focus batch setelah 3 percobaan: {last_error}") from last_error
 
     def _pod_context(self) -> tuple[str, str]:
         with self._shared_context["lock"]:

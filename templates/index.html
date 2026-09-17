@@ -27,6 +27,7 @@
         <button class="nav-item" data-workflow="pod_v2"><i data-lucide="file-spreadsheet"></i><span>Export Laporan POD V2</span></button>
         <button class="nav-item" data-workflow="pod_awb"><i data-lucide="scan-line"></i><span>Laporan POD by AWB</span></button>
         <p class="nav-label">Trace &amp; Tracking</p>
+        <button class="nav-item" data-workflow="tracking_focus"><i data-lucide="scan-text"></i><span>Tracing Referensi / Focus</span></button>
         <button class="nav-item" data-workflow="tracking_history"><i data-lucide="route"></i><span>Export History AWB</span></button>
         <p class="nav-label">Aktivitas</p>
         <button class="nav-item" data-workflow="jobs"><i data-lucide="list-checks"></i><span>Antrean Download</span><span id="active-count" class="nav-count">0</span></button>
@@ -67,8 +68,29 @@
           </div>
 
           <div id="awb-section" class="form-section" hidden>
-            <div class="awb-heading"><h3 id="awb-section-title">Daftar nomor AWB</h3><span id="awb-count">0 AWB unik</span></div>
-            <label id="awb-text-field" class="field full"><span>Nomor AWB</span><textarea id="awb_text" rows="12" placeholder="Tempel nomor AWB, satu nomor per baris"></textarea></label>
+            <div class="awb-heading"><h3 id="awb-section-title">Daftar nomor AWB</h3><span id="awb-count">0 nomor unik</span></div>
+            
+            <div id="focus-search-options" class="tracking-mode-options" hidden>
+              <span>Cari Berdasarkan</span>
+              <div class="segmented">
+                <label class="segment"><input type="radio" name="focus_search_by" value="a.reference_no" checked><span>No. Referensi AWB</span></label>
+                <label class="segment"><input type="radio" name="focus_search_by" value="a.awb_no"><span>No. AWB</span></label>
+                <label class="segment"><input type="radio" name="focus_search_by" value="a.cn_no"><span>No. Resi Pickup</span></label>
+                <label class="segment"><input type="radio" name="focus_search_by" value="a.telp_1"><span>No. Telp 1</span></label>
+              </div>
+            </div>
+
+            <div id="focus-input-options" class="tracking-mode-options" hidden>
+              <span>Metode Input</span>
+              <div class="segmented">
+                <label class="segment"><input type="radio" name="focus_input_type" value="excel" checked><span>Upload Excel</span></label>
+                <label class="segment"><input type="radio" name="focus_input_type" value="text"><span>Tempel Teks</span></label>
+              </div>
+            </div>
+
+            <label id="focus-file-field" class="field full" hidden><span id="focus-file-label">File Excel Daftar Referensi / AWB</span><input type="file" id="focus_file" accept=".xlsx,.xlsm"></label>
+
+            <label id="awb-text-field" class="field full"><span>Nomor AWB / Referensi</span><textarea id="awb_text" rows="12" placeholder="Tempel nomor, satu per baris"></textarea></label>
             <div id="tracking-mode-options" class="tracking-mode-options" hidden>
               <span>Jenis data</span>
               <div class="segmented">

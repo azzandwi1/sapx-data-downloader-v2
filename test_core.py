@@ -10,12 +10,17 @@ import requests
 from openpyxl import Workbook, load_workbook
 
 from app import available_port
-from coresys import CoresysClient, format_awb_text, normalize_awbs, normalize_awb_targets, parse_tracking_history, split_awbs, split_date_range
+from coresys import (
+    CoresysClient, extract_sla_info, format_awb_text, normalize_awbs,
+    normalize_awb_targets, parse_tracking_focus_html, parse_tracking_history,
+    split_awbs, split_date_range,
+)
 from history_export import (
     export_tracking_history, first_pod_courier, pickup_attempt_summary,
     read_awb_targets_workbook, tracking_milestones,
 )
 from jobs import JobManager
+from tracking_focus_export import export_tracking_focus, read_reference_targets_workbook
 
 
 class DateBatchTests(unittest.TestCase):
@@ -408,6 +413,84 @@ class PodPollingTests(unittest.TestCase):
 
         self.assertEqual(client.poll_pod_v2("123"), {"state": "processing"})
         self.assertEqual(client.session.post.call_count, 2)
+
+
+class TrackingFocusTests(unittest.TestCase):
+    SAMPLE_HTML = """
+        <table class="table view_sample">
+            <thead>
+                <tr>
+                    <th>No</th><th>No. AWB</th><th>No. Referance</th><th>No. Master</th>
+                    <th>Tanggal</th><th>Asal</th><th>District Asal</th><th>Tujuan</th>
+                    <th>Kota Tujuan</th><th>Jenis Layanan</th><th>Transaksi</th><th>Kilo</th>
+                    <th>Koli</th><th>No Invoice</th><th>Status</th><th>Detail Status</th>
+                    <th>No. Resi Pickup</th><th>Dibuat Oleh</th><th>Di POD Oleh</th><th>Riwayat</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>1</td>
+                    <td><a href="...">CGK8161744700066</a></td>
+                    <td>NONPO03072026012</td>
+                    <td><a href="...">81617447</a></td>
+                    <td>3-7-2026</td>
+                    <td>JAKARTA</td><td>JAKARTA</td><td>MAKASSAR</td><td>MAKASSAR</td>
+                    <td>SATRIA REG</td><td>KREDIT</td><td>1</td><td>1</td><td>CGK539398263</td>
+                    <td>POD - DELIVERED</td>
+                    <td>Max SLA : 4 days Shipping Duration : 3 days Status : POD - DELIVERED IN SLA</td>
+                    <td></td><td>CGK07251279A</td>;<td>UPGH106260724</td>
+                    <td><a href="...">Riwayat</a></td>
+                </tr>
+            </tbody>
+        </table>
+    """
+
+    def test_extract_sla_info(self):
+        detail = "Max SLA : 4 days Shipping Duration : 3 days Status : POD - DELIVERED IN SLA"
+        max_sla, dur, status = extract_sla_info(detail)
+        self.assertEqual(max_sla, "4 days")
+        self.assertEqual(dur, "3 days")
+        self.assertEqual(status, "POD - DELIVERED IN SLA")
+
+    def test_parse_tracking_focus_html(self):
+        records = parse_tracking_focus_html(self.SAMPLE_HTML)
+        self.assertEqual(len(records), 1)
+        rec = records[0]
+        self.assertEqual(rec["no"], 1)
+        self.assertEqual(rec["awb_no"], "CGK8161744700066")
+        self.assertEqual(rec["reference_no"], "NONPO03072026012")
+        self.assertEqual(rec["destination"], "MAKASSAR")
+        self.assertEqual(rec["max_sla"], "4 days")
+        self.assertEqual(rec["shipping_duration"], "3 days")
+        self.assertEqual(rec["sla_status"], "POD - DELIVERED IN SLA")
+        self.assertEqual(rec["pod_by"], "UPGH106260724")
+
+    def test_read_and_export_tracking_focus(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            wb_in = Workbook()
+            ws_in = wb_in.active
+            ws_in.append(["No. Referance"])
+            ws_in.append(["NONPO03072026012"])
+            ws_in.append(["NONPO03072026999"])
+            in_path = Path(temp_dir) / "test_input.xlsx"
+            wb_in.save(in_path)
+
+            with open(in_path, "rb") as fp:
+                targets = read_reference_targets_workbook(fp)
+            self.assertEqual(targets, ["NONPO03072026012", "NONPO03072026999"])
+
+            records = parse_tracking_focus_html(self.SAMPLE_HTML)
+            out_path = Path(temp_dir) / "output.xlsx"
+            export_tracking_focus(records, targets, out_path, search_by="a.reference_no")
+
+            wb_out = load_workbook(out_path)
+            ws_out = wb_out.active
+            self.assertEqual(ws_out.title, "Riwayat Tracking Focus")
+            self.assertEqual(ws_out.max_row, 3)  # Header + 1 found + 1 not found
+            self.assertEqual(ws_out.cell(row=2, column=2).value, "NONPO03072026012")
+            self.assertEqual(ws_out.cell(row=2, column=3).value, "CGK8161744700066")
+            self.assertEqual(ws_out.cell(row=3, column=2).value, "NONPO03072026999")
+            self.assertEqual(ws_out.cell(row=3, column=15).value, "TIDAK DITEMUKAN")
 
 
 if __name__ == "__main__":

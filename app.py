@@ -13,6 +13,7 @@ from flask import Flask, jsonify, render_template, request, send_file, session
 from coresys import CoresysClient, CoresysError, normalize_awbs
 from history_export import read_awb_targets_workbook
 from jobs import JobManager
+from tracking_focus_export import read_reference_targets_workbook
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent
@@ -136,6 +137,18 @@ def import_tracking_history_file():
     return jsonify({"ok": True, "targets": targets, "count": len(targets), "filename": Path(upload.filename).name})
 
 
+@app.post("/api/tracking-focus/import")
+def import_tracking_focus_file():
+    current_client()
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        raise ValueError("Pilih file Excel terlebih dahulu.")
+    if Path(upload.filename).suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise ValueError("Format file harus .xlsx atau .xlsm.")
+    targets = read_reference_targets_workbook(upload.stream)
+    return jsonify({"ok": True, "targets": targets, "count": len(targets), "filename": Path(upload.filename).name})
+
+
 @app.get("/api/jobs")
 def list_jobs():
     current_client()
@@ -146,7 +159,15 @@ def list_jobs():
 def create_job():
     client = current_client()
     payload = request.get_json(force=True)
-    if payload.get("workflow") == "tracking_history":
+    if payload.get("workflow") == "tracking_focus":
+        targets = payload.get("targets")
+        if not targets and payload.get("text"):
+            targets = normalize_awbs(str(payload.get("text", "")))
+        if not isinstance(targets, list) or not targets:
+            raise ValueError("Masukkan atau unggah minimal satu nomor referensi/AWB.")
+        payload["targets"] = [str(t).strip() for t in targets if str(t).strip()]
+        payload["search_by"] = str(payload.get("search_by") or "a.reference_no")
+    elif payload.get("workflow") == "tracking_history":
         items = payload.get("awb_targets")
         if not isinstance(items, list):
             raise ValueError("Unggah file Excel terlebih dahulu.")

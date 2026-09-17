@@ -11,6 +11,7 @@ from typing import Any
 
 from coresys import CoresysClient, CoresysError, split_awbs, split_date_range
 from history_export import export_tracking_history
+from tracking_focus_export import export_tracking_focus
 
 
 class JobManager:
@@ -32,10 +33,24 @@ class JobManager:
 
     def create(self, client: CoresysClient, payload: dict[str, Any]) -> dict[str, Any]:
         workflow = payload.get("workflow")
-        if workflow not in {"pickup", "pickup_manual", "pod_v2", "pod_awb", "tracking_history"}:
+        if workflow not in {"pickup", "pickup_manual", "pod_v2", "pod_awb", "tracking_history", "tracking_focus"}:
             raise ValueError("Workflow tidak dikenal.")
 
-        if workflow == "tracking_history":
+        if workflow == "tracking_focus":
+            targets = payload.get("targets") or []
+            if not targets:
+                raise ValueError("Masukkan minimal satu nomor untuk dilacak.")
+            search_by = payload.get("search_by") or "a.reference_no"
+            batches = [{
+                "index": 1,
+                "label": f"{len(targets):,} nomor ke satu file Excel",
+                "targets": targets,
+                "search_by": search_by,
+                "progress_unit": "nomor",
+                "processed": 0,
+                "item_total": len(targets),
+            }]
+        elif workflow == "tracking_history":
             awb_targets = payload.get("awb_targets") or []
             if not awb_targets:
                 raise ValueError("Masukkan minimal satu nomor AWB.")
@@ -77,7 +92,7 @@ class JobManager:
             ]
 
         job_id = uuid.uuid4().hex[:12]
-        max_parallelism = 12 if workflow == "tracking_history" else 3
+        max_parallelism = 12 if workflow in {"tracking_history", "tracking_focus"} else 3
         job = {
             "id": job_id,
             "workflow": workflow,
@@ -92,6 +107,7 @@ class JobManager:
             "include_summary": bool(payload.get("include_summary", True)),
             "include_history": bool(payload.get("include_history", True)),
             "tracking_mode": payload.get("tracking_mode", "milestone"),
+            "search_by": payload.get("search_by", "a.reference_no"),
             "completed": 0,
             "failed": 0,
             "cancel_requested": False,
@@ -288,6 +304,32 @@ class JobManager:
                     )
                 self._touch(job)
             return path
+
+        if job["workflow"] == "tracking_focus":
+            targets = batch["targets"]
+            search_by = batch.get("search_by") or job.get("search_by") or "a.reference_no"
+            chunk_size = 200
+            all_records = []
+            processed_count = 0
+            self._item_progress(job["id"], batch["index"], 0, len(targets))
+
+            for i in range(0, len(targets), chunk_size):
+                if job["cancel_requested"]:
+                    raise CoresysError("Pekerjaan dibatalkan.")
+                chunk = targets[i : i + chunk_size]
+                records = client.fetch_tracking_focus_batch(chunk, search_by=search_by)
+                all_records.extend(records)
+                processed_count += len(chunk)
+                self._item_progress(job["id"], batch["index"], processed_count, len(targets))
+                if i + chunk_size < len(targets) and job.get("delay_seconds"):
+                    time.sleep(job["delay_seconds"])
+
+            out_file = job_dir / f"{prefix}_tracking_focus.xlsx"
+            export_tracking_focus(all_records, targets, out_file, search_by=search_by)
+            with self.lock:
+                batch["records"] = len(all_records)
+                self._touch(job)
+            return out_file
 
         submitted = client.submit_pod_v2(batch["from"], batch["to"], job["filters"])
         process_id = submitted["process_id"]

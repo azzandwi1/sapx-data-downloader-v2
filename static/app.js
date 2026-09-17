@@ -60,6 +60,13 @@ const workflowConfig = {
     exports: [["pod_awb", "Export Data"]],
     fields: [],
   },
+  tracking_focus: {
+    title: "Tracing Referensi / Focus",
+    breadcrumb: "Trace & Tracking / Tracing Referensi / Focus",
+    description: "Cari riwayat dan status SLA berdasarkan No. Referensi atau No. AWB, lalu export ke Excel.",
+    exports: [["tracking_focus", "Excel Tracing"]],
+    fields: [],
+  },
   tracking_history: {
     title: "Export History AWB",
     breadcrumb: "Trace & Tracking / Export History AWB",
@@ -74,6 +81,7 @@ const workflowLabels = {
   pickup_manual: "Pickup Manual",
   pod_v2: "Laporan POD V2",
   pod_awb: "POD by AWB",
+  tracking_focus: "Tracing Referensi",
   tracking_history: "History AWB",
 };
 
@@ -102,6 +110,10 @@ const state = {
   trackingTargets: [],
   trackingFileName: "",
   trackingMode: "milestone",
+  focusTargets: [],
+  focusFileName: "",
+  focusInputType: "excel",
+  focusSearchBy: "a.reference_no",
   autoDownloadJobs: storedSet(AUTO_JOBS_KEY),
   downloadedBatches: storedSet(DOWNLOADED_BATCHES_KEY),
 };
@@ -185,7 +197,22 @@ function parseAwbs() {
 }
 
 function updateAwbPreview() {
+  const focusMode = state.workflow === "tracking_focus";
   const historyMode = state.workflow === "tracking_history";
+  
+  if (focusMode) {
+    const count = state.focusInputType === "excel" ? state.focusTargets.length : parseAwbs().length;
+    $("#awb-count").textContent = `${count.toLocaleString("id-ID")} nomor unik`;
+    $("#awb-preview span").textContent = state.focusInputType === "excel"
+      ? (count
+        ? `${state.focusFileName}: ${count.toLocaleString("id-ID")} nomor siap diproses.`
+        : "Pilih file Excel daftar referensi/AWB (contoh: TRACING.xlsx).")
+      : (count
+        ? `${count.toLocaleString("id-ID")} nomor siap diproses.`
+        : "Tempel nomor referensi atau AWB di area teks (satu per baris).");
+    return;
+  }
+
   const targets = historyMode ? state.trackingTargets : [];
   const count = historyMode ? targets.length : parseAwbs().length;
   const size = Math.max(1, Math.min(10000, Number($("#batch_size").value) || 10000));
@@ -279,8 +306,9 @@ function showWorkflow(workflow) {
   }
 
   const config = workflowConfig[workflow];
-  const awbMode = ["pod_awb", "tracking_history"].includes(workflow);
+  const awbMode = ["pod_awb", "tracking_history", "tracking_focus"].includes(workflow);
   const historyMode = workflow === "tracking_history";
+  const focusMode = workflow === "tracking_focus";
   $("#page-title").textContent = config.title;
   $("#breadcrumb").textContent = config.breadcrumb;
   $("#workflow-description").textContent = config.description;
@@ -294,21 +322,31 @@ function showWorkflow(workflow) {
     const element = $(selector);
     if (element) element.disabled = !awbMode;
   });
-  $("#awb_text").required = awbMode && !historyMode;
-  $("#awb-text-field").hidden = historyMode;
+  $("#awb_text").required = false;
+  $("#focus-search-options").hidden = !focusMode;
+  $("#focus-input-options").hidden = !focusMode;
+  $("#focus-file-field").hidden = !focusMode || state.focusInputType !== "excel";
   $("#tracking-file-field").hidden = !historyMode;
   $("#tracking-mode-options").hidden = !historyMode;
   $("#tracking-output-options").hidden = !historyMode;
-  $("#awb-section-title").textContent = historyMode
-    ? (state.trackingMode === "pickup_attempt"
+  $("#awb-text-field").hidden = historyMode || (focusMode && state.focusInputType === "excel");
+
+  if (focusMode) {
+    $("#awb-section-title").textContent = "Daftar Nomor Referensi / AWB";
+  } else if (historyMode) {
+    $("#awb-section-title").textContent = state.trackingMode === "pickup_attempt"
       ? "Daftar AWB untuk verifikasi pickup"
-      : (state.trackingMode === "courier_pod" ? "Daftar AWB untuk ID kurir POD" : "File AWB dan TLC tujuan"))
-    : "Daftar nomor AWB";
+      : (state.trackingMode === "courier_pod" ? "Daftar AWB untuk ID kurir POD" : "File AWB dan TLC tujuan");
+  } else {
+    $("#awb-section-title").textContent = "Daftar nomor AWB";
+  }
+
   $("#tracking-file-label").textContent = state.trackingMode !== "milestone"
     ? "File Excel daftar AWB"
     : "File Excel AWB dan TLC tujuan";
-  $("#batch_size").closest(".field").hidden = historyMode;
-  $("#awb_delay_seconds").value = historyMode ? "0" : "1";
+  $("#batch_size").closest(".field").hidden = historyMode || focusMode;
+  $("#awb_parallel_workers").closest(".field").hidden = focusMode;
+  $("#awb_delay_seconds").value = (historyMode || focusMode) ? "0" : "1";
   $("#awb_parallel_workers").max = historyMode ? "12" : "3";
   $("#awb_parallel_workers").value = historyMode ? "9" : "2";
   $("#filter-section").hidden = config.fields.length === 0;
@@ -339,7 +377,19 @@ async function startJob(event) {
       export: document.querySelector('input[name="export"]:checked')?.value || "",
       filters: collectFilters(),
     };
-    if (state.workflow === "tracking_history") {
+    if (state.workflow === "tracking_focus") {
+      payload.search_by = state.focusSearchBy;
+      if (state.focusInputType === "excel") {
+        if (!state.focusTargets.length) throw new Error("Unggah file Excel terlebih dahulu.");
+        payload.targets = state.focusTargets;
+      } else {
+        const awbs = parseAwbs();
+        if (!awbs.length) throw new Error("Tempel minimal satu nomor pada area teks.");
+        payload.targets = awbs;
+      }
+      payload.delay_seconds = Number($("#awb_delay_seconds").value) || 0;
+      payload.parallelism = 1;
+    } else if (state.workflow === "tracking_history") {
       if (!state.trackingTargets.length) throw new Error("Unggah file Excel terlebih dahulu.");
       payload.awb_targets = state.trackingTargets;
       payload.tracking_mode = state.trackingMode;
@@ -520,6 +570,32 @@ async function importTrackingFile(event) {
   }
 }
 
+async function importFocusFile(event) {
+  const file = event.target.files?.[0];
+  state.focusTargets = [];
+  state.focusFileName = "";
+  updateAwbPreview();
+  if (!file) return;
+  event.target.disabled = true;
+  $("#awb-preview span").textContent = "Membaca file Excel...";
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch("/api/tracking-focus/import", { method: "POST", body: form });
+    const result = await response.json();
+    if (!response.ok || result.ok === false) throw new Error(result.error || "File Excel tidak dapat dibaca.");
+    state.focusTargets = result.targets;
+    state.focusFileName = result.filename;
+    updateAwbPreview();
+  } catch (error) {
+    event.target.value = "";
+    toast(error.message);
+    updateAwbPreview();
+  } finally {
+    event.target.disabled = false;
+  }
+}
+
 function changeTrackingMode(event) {
   state.trackingMode = event.target.value;
   state.trackingTargets = [];
@@ -551,13 +627,30 @@ function bindEvents() {
   $("#batch_days").addEventListener("input", updateBatchPreview);
   $("#awb_text").addEventListener("input", updateAwbPreview);
   $("#tracking_file").addEventListener("change", importTrackingFile);
+  $("#focus_file").addEventListener("change", importFocusFile);
+  $$("input[name='focus_search_by']").forEach(input => input.addEventListener("change", e => {
+    state.focusSearchBy = e.target.value;
+  }));
+  $$("input[name='focus_input_type']").forEach(input => input.addEventListener("change", e => {
+    state.focusInputType = e.target.value;
+    showWorkflow("tracking_focus");
+  }));
   $$("input[name='tracking_mode']").forEach(input => input.addEventListener("change", changeTrackingMode));
   $("#batch_size").addEventListener("input", updateAwbPreview);
   $("#reset-button").addEventListener("click", () => {
     $("#workflow-form").reset();
     $("#batch_days").value = workflowConfig[state.workflow]?.batchDays || 7;
     $("#batch_days").max = state.workflow === "pod_v2" ? "31" : "366";
-    if (state.workflow === "tracking_history") {
+    if (state.workflow === "tracking_focus") {
+      state.focusTargets = [];
+      state.focusFileName = "";
+      state.focusInputType = "excel";
+      state.focusSearchBy = "a.reference_no";
+      $("#focus_file").value = "";
+      document.querySelector("input[name='focus_search_by'][value='a.reference_no']").checked = true;
+      document.querySelector("input[name='focus_input_type'][value='excel']").checked = true;
+      showWorkflow("tracking_focus");
+    } else if (state.workflow === "tracking_history") {
       state.trackingMode = "milestone";
       state.trackingTargets = [];
       state.trackingFileName = "";

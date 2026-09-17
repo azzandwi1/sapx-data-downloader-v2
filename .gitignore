@@ -11,3 +11,6 @@ downloads/*
 .codex-tmp/
 .playwright-cli/
 outputs/
+*.xlsx
+*.xlsm
+~$*
