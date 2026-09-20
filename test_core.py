@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import requests
 from openpyxl import Workbook, load_workbook
 
-from app import available_port
+from app import app, available_port, clients, clients_lock
 from coresys import (
     CoresysClient, extract_sla_info, format_awb_text, normalize_awbs,
     normalize_awb_targets, parse_tracking_focus_html, parse_tracking_history,
@@ -32,6 +32,26 @@ class DateBatchTests(unittest.TestCase):
                 {"from": "2026-01-01", "to": "2026-01-07"},
                 {"from": "2026-01-08", "to": "2026-01-14"},
                 {"from": "2026-01-15", "to": "2026-01-17"},
+            ],
+        )
+
+    def test_month_boundary_clamping(self):
+        batches = split_date_range("2026-01-28", "2026-02-05", 7)
+        self.assertEqual(
+            [batch.as_dict() for batch in batches],
+            [
+                {"from": "2026-01-28", "to": "2026-01-31"},
+                {"from": "2026-02-01", "to": "2026-02-05"},
+            ],
+        )
+
+    def test_30_day_month_clamping(self):
+        batches = split_date_range("2026-04-29", "2026-05-04", 7)
+        self.assertEqual(
+            [batch.as_dict() for batch in batches],
+            [
+                {"from": "2026-04-29", "to": "2026-04-30"},
+                {"from": "2026-05-01", "to": "2026-05-04"},
             ],
         )
 
@@ -353,7 +373,7 @@ class XlsxResultTests(unittest.TestCase):
 class ParallelJobTests(unittest.TestCase):
     class FakeClient:
         def __init__(self, state=None):
-            self.state = state or {"active": 0, "maximum": 0, "lock": threading.Lock()}
+            self.state = state if state is not None else {"active": 0, "maximum": 0, "lock": threading.Lock(), "timestamps": []}
 
         def fork(self):
             return self.__class__(self.state)
@@ -365,6 +385,7 @@ class ParallelJobTests(unittest.TestCase):
             with self.state["lock"]:
                 self.state["active"] += 1
                 self.state["maximum"] = max(self.state["maximum"], self.state["active"])
+                self.state.setdefault("timestamps", []).append(time.monotonic())
             try:
                 time.sleep(0.1)
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -400,6 +421,112 @@ class ParallelJobTests(unittest.TestCase):
                 self.assertEqual(client.state["maximum"], 2)
             finally:
                 manager.shutdown()
+
+    def test_runs_batches_sequentially_with_delay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = JobManager(Path(directory), max_concurrent_batches=1)
+            client = self.FakeClient()
+            timestamps = []
+
+            try:
+                job = manager.create(client, {
+                    "workflow": "pickup",
+                    "export": "report_monitoring_xlsx",
+                    "date_from": "2026-01-01",
+                    "date_to": "2026-01-02",
+                    "batch_days": 1,
+                    "delay_seconds": 1,
+                    "parallelism": 1,
+                })
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    current = manager.public(job["id"])
+                    if current["status"] not in {"queued", "running"}:
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(current["status"], "complete")
+                self.assertEqual(current["completed"], 2)
+                self.assertEqual(client.state["maximum"], 1)
+                timestamps = client.state["timestamps"]
+                self.assertEqual(len(timestamps), 2)
+                self.assertGreaterEqual(timestamps[1] - timestamps[0], 1.0)
+            finally:
+                manager.shutdown()
+
+
+class JobRetryTests(unittest.TestCase):
+    class FlakyClient:
+        def __init__(self):
+            self.attempts = 0
+            self.lock = threading.Lock()
+
+        def fork(self):
+            return self
+
+        def pickup_url(self, start, end, filters, export):
+            return f"https://example.test/{start}/{end}"
+
+        def download_direct(self, url, destination, progress):
+            with self.lock:
+                self.attempts += 1
+                should_fail = (self.attempts == 1)
+            if should_fail:
+                raise RuntimeError("Koneksi portal terputus.")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"ok")
+            progress(2, 2)
+            return destination
+
+    def test_retry_failed_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = JobManager(Path(directory), max_concurrent_batches=1)
+            client = self.FlakyClient()
+            try:
+                job = manager.create(client, {
+                    "workflow": "pickup",
+                    "export": "report_monitoring_xlsx",
+                    "date_from": "2026-01-01",
+                    "date_to": "2026-01-01",
+                    "batch_days": 1,
+                    "delay_seconds": 0,
+                    "parallelism": 1,
+                })
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    cur = manager.public(job["id"])
+                    if cur["status"] in {"complete_with_errors", "failed"}:
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(cur["status"], "complete_with_errors")
+                self.assertEqual(cur["batches"][0]["status"], "failed")
+                self.assertEqual(cur["failed"], 1)
+
+                # Retry the failed batch
+                manager.retry_batch(job["id"], 1, client)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    cur = manager.public(job["id"])
+                    if cur["status"] == "complete":
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(cur["status"], "complete")
+                self.assertEqual(cur["batches"][0]["status"], "complete")
+                self.assertEqual(cur["completed"], 1)
+                self.assertEqual(cur["failed"], 0)
+            finally:
+                manager.shutdown()
+
+    def test_retry_batch_api_endpoint(self):
+        with app.test_client() as tc:
+            c = CoresysClient()
+            c.username = "TEST_USER"
+            with tc.session_transaction() as sess:
+                sess["session_id"] = "test-sess-retry"
+            with clients_lock:
+                clients["test-sess-retry"] = c
+
+            res = tc.post("/api/jobs/non-existent/batches/1/retry")
+            self.assertEqual(res.status_code, 404)
 
 
 class PodPollingTests(unittest.TestCase):
@@ -491,6 +618,47 @@ class TrackingFocusTests(unittest.TestCase):
             self.assertEqual(ws_out.cell(row=2, column=3).value, "CGK8161744700066")
             self.assertEqual(ws_out.cell(row=3, column=2).value, "NONPO03072026999")
             self.assertEqual(ws_out.cell(row=3, column=15).value, "TIDAK DITEMUKAN")
+
+
+class TrackingHistoryPastedInputTests(unittest.TestCase):
+    def test_milestones_without_tlc(self):
+        records = [
+            {"process": "ENTRI VERIFIED", "datetime": "2026-06-23 13:31:27", "location": "KANTOR PUSAT / CGK1"},
+            {"process": "OUTGOING SMU", "datetime": "2026-06-25 06:48:35", "location": "KANTOR PUSAT / CGK1"},
+            {"process": "INCOMING SMU", "datetime": "2026-06-26 03:04:33", "location": "SURABAYA / SUB1"},
+            {"process": "POD", "datetime": "2026-07-03 09:31:00", "location": "PALANGKARAYA / PKYD103184915"},
+        ]
+        verified, outgoing, incoming, pod = tracking_milestones(records, "")
+        self.assertIsNotNone(verified)
+        self.assertIsNotNone(outgoing)
+        self.assertEqual(incoming.strftime("%Y-%m-%d %H:%M:%S"), "2026-06-26 03:04:33")
+        self.assertEqual(pod.strftime("%Y-%m-%d %H:%M:%S"), "2026-07-03 09:31:00")
+
+    def test_api_create_job_with_pasted_awb_text(self):
+        import json
+        with app.test_client() as client:
+            c = CoresysClient()
+            c.username = "TEST_USER"
+            with client.session_transaction() as sess:
+                sess["session_id"] = "test-sess-paste"
+            with clients_lock:
+                clients["test-sess-paste"] = c
+
+            payload = {
+                "workflow": "tracking_history",
+                "awb_text": "CGK10001\nCGK10002 PKY",
+                "tracking_mode": "milestone",
+                "delay_seconds": 0,
+                "parallelism": 1,
+            }
+            res = client.post("/api/jobs", data=json.dumps(payload), content_type="application/json")
+            self.assertEqual(res.status_code, 201)
+            job = res.json["job"]
+            self.assertEqual(job["workflow"], "tracking_history")
+            batches = job["batches"]
+            self.assertEqual(len(batches), 1)
+            self.assertEqual(batches[0]["item_total"], 2)
+            self.assertIn("2 AWB", batches[0]["label"])
 
 
 if __name__ == "__main__":

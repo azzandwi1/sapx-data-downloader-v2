@@ -79,12 +79,12 @@ def tracking_milestones(records: list[dict[str, Any]], tlc: str) -> tuple[object
     )
     incoming = next(
         (_portal_datetime(row["datetime"]) for row in records
-         if row["process"].upper() == "INCOMING SMU" and _event_at_tlc(row, tlc)),
+         if row["process"].upper() == "INCOMING SMU" and (not tlc or _event_at_tlc(row, tlc))),
         None,
     )
     pod = next(
         (_portal_datetime(row["datetime"]) for row in records
-         if row["process"].upper() == "POD" and _event_at_tlc(row, tlc)),
+         if row["process"].upper() == "POD" and (not tlc or _event_at_tlc(row, tlc))),
         None,
     )
     return verified, outgoing, incoming, pod

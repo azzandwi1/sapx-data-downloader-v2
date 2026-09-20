@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import json
 import re
 import threading
@@ -231,7 +232,9 @@ def split_date_range(start: str, end: str, batch_days: int) -> list[DateBatch]:
     result: list[DateBatch] = []
     cursor = start_date
     while cursor <= end_date:
-        batch_end = min(cursor + timedelta(days=batch_days - 1), end_date)
+        _, last_day = calendar.monthrange(cursor.year, cursor.month)
+        month_end = date(cursor.year, cursor.month, last_day)
+        batch_end = min(cursor + timedelta(days=batch_days - 1), month_end, end_date)
         result.append(DateBatch(cursor, batch_end))
         cursor = batch_end + timedelta(days=1)
     return result

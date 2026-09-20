@@ -101,9 +101,9 @@ class JobManager:
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "filters": payload.get("filters") or {},
             "export": payload.get("export", ""),
-            "delay_seconds": max(0, min(int(payload.get("delay_seconds", 1)), 300)),
+            "delay_seconds": max(0, min(int(payload.get("delay_seconds", 30)), 300)),
             "poll_seconds": max(5, min(int(payload.get("poll_seconds", 5)), 120)),
-            "parallelism": max(1, min(int(payload.get("parallelism", 2)), max_parallelism)),
+            "parallelism": max(1, min(int(payload.get("parallelism", 1)), max_parallelism)),
             "include_summary": bool(payload.get("include_summary", True)),
             "include_history": bool(payload.get("include_history", True)),
             "tracking_mode": payload.get("tracking_mode", "milestone"),
@@ -147,6 +147,36 @@ class JobManager:
             if job["status"] in {"queued", "running"}:
                 job["cancel_requested"] = True
                 self._touch(job)
+        return self.public(job_id)
+
+    def retry_batch(self, job_id: str, batch_index: int, client: CoresysClient) -> dict[str, Any]:
+        with self.lock:
+            job = self.jobs[job_id]
+            if not 1 <= batch_index <= len(job["batches"]):
+                raise IndexError("Batch tidak ditemukan.")
+            batch = job["batches"][batch_index - 1]
+            if batch["status"] != "failed":
+                raise ValueError("Hanya batch yang berstatus gagal yang dapat dicoba ulang.")
+
+            batch["status"] = "queued"
+            batch["error"] = None
+            batch["warning"] = None
+            batch["downloaded"] = 0
+            batch["total"] = None
+            batch["file"] = None
+            if "processed" in batch:
+                batch["processed"] = 0
+            batch.pop("records", None)
+            batch.pop("missing", None)
+            batch.pop("request_failed", None)
+            batch.pop("process_id", None)
+
+            job["failed"] = max(0, job["failed"] - 1)
+            job["cancel_requested"] = False
+            job["status"] = "running"
+            self._touch(job)
+
+        self.batch_executor.submit(self._execute_retried_batch, client.fork(), job, batch)
         return self.public(job_id)
 
     def file_for(self, job_id: str, batch_index: int) -> Path:
@@ -198,8 +228,6 @@ class JobManager:
                 future = self.batch_executor.submit(self._execute_batch, client.fork(), job, batch)
                 running[future] = batch
                 next_batch += 1
-                if next_batch < len(job["batches"]) and job["delay_seconds"]:
-                    time.sleep(job["delay_seconds"])
                 with self.lock:
                     cancelled = job["cancel_requested"]
 
@@ -208,6 +236,17 @@ class JobManager:
                 for future in done:
                     running.pop(future)
                     future.result()
+
+                with self.lock:
+                    cancelled = job["cancel_requested"]
+                if not cancelled and next_batch < len(job["batches"]) and job["delay_seconds"]:
+                    sleep_until = time.monotonic() + job["delay_seconds"]
+                    while time.monotonic() < sleep_until:
+                        with self.lock:
+                            if job["cancel_requested"]:
+                                cancelled = True
+                                break
+                        time.sleep(min(0.5, max(0.0, sleep_until - time.monotonic())))
             elif cancelled:
                 break
 
@@ -218,7 +257,12 @@ class JobManager:
                         batch["status"] = "cancelled"
                 job["status"] = "cancelled"
             else:
-                job["status"] = "complete" if job["failed"] == 0 else "complete_with_errors"
+                any_active = any(
+                    b["status"] in {"queued", "running", "waiting_server", "downloading"}
+                    for b in job["batches"]
+                )
+                if not any_active:
+                    job["status"] = "complete" if job["failed"] == 0 else "complete_with_errors"
             self._touch(job)
 
     def _execute_batch(
@@ -248,6 +292,22 @@ class JobManager:
                 batch["error"] = str(exc)
                 job["failed"] += 1
                 self._touch(job)
+
+    def _execute_retried_batch(
+        self,
+        client: CoresysClient,
+        job: dict[str, Any],
+        batch: dict[str, Any],
+    ) -> None:
+        self._execute_batch(client, job, batch)
+        with self.lock:
+            any_active = any(
+                b["status"] in {"queued", "running", "waiting_server", "downloading"}
+                for b in job["batches"]
+            )
+            if not any_active:
+                job["status"] = "complete" if job["failed"] == 0 else "complete_with_errors"
+            self._touch(job)
 
     def shutdown(self) -> None:
         self.job_executor.shutdown(wait=True, cancel_futures=True)

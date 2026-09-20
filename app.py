@@ -10,7 +10,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file, session
 
-from coresys import CoresysClient, CoresysError, normalize_awbs
+from coresys import CoresysClient, CoresysError, normalize_awbs, normalize_awb_targets
 from history_export import read_awb_targets_workbook
 from jobs import JobManager
 from tracking_focus_export import read_reference_targets_workbook
@@ -168,20 +168,22 @@ def create_job():
         payload["targets"] = [str(t).strip() for t in targets if str(t).strip()]
         payload["search_by"] = str(payload.get("search_by") or "a.reference_no")
     elif payload.get("workflow") == "tracking_history":
+        raw_text = str(payload.get("awb_text", "")).strip()
         items = payload.get("awb_targets")
-        if not isinstance(items, list):
-            raise ValueError("Unggah file Excel terlebih dahulu.")
+        if not items and raw_text:
+            items = normalize_awb_targets(raw_text)
+        elif not isinstance(items, list):
+            raise ValueError("Tempel nomor AWB terlebih dahulu.")
         tracking_mode = payload.get("tracking_mode", "milestone")
         if tracking_mode not in {"milestone", "courier_pod", "pickup_attempt"}:
             raise ValueError("Jenis data trace & tracking tidak dikenal.")
         targets = [
             {"awb": str(item.get("awb", "")).strip().upper(), "tlc": str(item.get("tlc", "")).strip().upper()}
-            for item in items if isinstance(item, dict) and str(item.get("awb", "")).strip()
+            if isinstance(item, dict) else {"awb": str(item).strip().upper(), "tlc": ""}
+            for item in items if str(item.get("awb", "") if isinstance(item, dict) else item).strip()
         ]
         if not targets:
-            raise ValueError("File Excel tidak memiliki nomor AWB yang dapat diproses.")
-        if tracking_mode == "milestone" and any(not item["tlc"] for item in targets):
-            raise ValueError("TLC Tujuan wajib diisi untuk mode Milestone tujuan.")
+            raise ValueError("Tidak ada nomor AWB yang dapat diproses.")
         payload["awb_targets"] = targets
     elif payload.get("workflow") == "pod_awb":
         payload["awbs"] = normalize_awbs(str(payload.get("awb_text", "")))
@@ -215,6 +217,18 @@ def download(job_id: str, batch_index: int):
     except (KeyError, IndexError, FileNotFoundError):
         return jsonify({"ok": False, "error": "File belum tersedia."}), 404
     return send_file(path, as_attachment=True, download_name=path.name)
+
+
+@app.post("/api/jobs/<job_id>/batches/<int:batch_index>/retry")
+def retry_batch(job_id: str, batch_index: int):
+    client = current_client()
+    try:
+        job = jobs.retry_batch(job_id, batch_index, client)
+        return jsonify({"ok": True, "job": job})
+    except KeyError:
+        return jsonify({"ok": False, "error": "Pekerjaan tidak ditemukan."}), 404
+    except (IndexError, ValueError) as err:
+        return jsonify({"ok": False, "error": str(err)}), 400
 
 
 if __name__ == "__main__":

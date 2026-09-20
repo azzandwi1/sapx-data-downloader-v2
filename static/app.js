@@ -213,18 +213,21 @@ function updateAwbPreview() {
     return;
   }
 
-  const targets = historyMode ? state.trackingTargets : [];
-  const count = historyMode ? targets.length : parseAwbs().length;
+  const count = parseAwbs().length;
+  $("#awb-count").textContent = `${count.toLocaleString("id-ID")} AWB unik`;
+
+  if (historyMode) {
+    $("#awb-preview span").textContent = count
+      ? `${count.toLocaleString("id-ID")} AWB akan digabungkan ke satu file Excel.`
+      : (state.trackingMode === "milestone"
+        ? "Tempel daftar AWB (bisa AWB saja atau AWB dan TLC tujuan, pisahkan spasi/tab)."
+        : "Tempel daftar nomor AWB, satu nomor per baris.");
+    return;
+  }
+
   const size = Math.max(1, Math.min(10000, Number($("#batch_size").value) || 10000));
   const batches = count ? Math.ceil(count / size) : 0;
-  $("#awb-count").textContent = `${count.toLocaleString("id-ID")} AWB unik`;
-  $("#awb-preview span").textContent = historyMode
-    ? (count
-      ? `${state.trackingFileName}: ${count.toLocaleString("id-ID")} AWB siap diproses.`
-      : (state.trackingMode !== "milestone"
-        ? "Pilih file Excel yang memiliki kolom No. AWB."
-        : "Pilih file Excel yang memiliki kolom No. AWB dan TLC Tujuan."))
-    : count
+  $("#awb-preview span").textContent = count
     ? `${count.toLocaleString("id-ID")} AWB akan menghasilkan ${batches} file, maksimal ${size.toLocaleString("id-ID")} AWB per file.`
     : "Daftar akan otomatis dipecah maksimal 10.000 AWB per file.";
 }
@@ -235,10 +238,37 @@ function dateDiffDays(start, end) {
   return Math.floor((b - a) / 86400000) + 1;
 }
 
+function calculateDateBatches(startStr, endStr, batchDays) {
+  const startDate = new Date(`${startStr}T00:00:00`);
+  const endDate = new Date(`${endStr}T00:00:00`);
+  if (startDate > endDate) return [];
+  const batches = [];
+  let cursor = new Date(startDate.getTime());
+  while (cursor <= endDate) {
+    const year = cursor.getFullYear();
+    const month = cursor.getMonth();
+    const lastDayOfMonth = new Date(year, month + 1, 0);
+
+    const targetEnd = new Date(cursor.getTime());
+    targetEnd.setDate(targetEnd.getDate() + (batchDays - 1));
+
+    let batchEnd = targetEnd;
+    if (batchEnd > lastDayOfMonth) batchEnd = lastDayOfMonth;
+    if (batchEnd > endDate) batchEnd = endDate;
+
+    batches.push({ start: new Date(cursor.getTime()), end: new Date(batchEnd.getTime()) });
+    cursor = new Date(batchEnd.getTime());
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return batches;
+}
+
 function updateBatchPreview() {
   const start = $("#date_from").value;
   const end = $("#date_to").value;
   const days = Number($("#batch_days").value) || 1;
+  const delay = Number($("#delay_seconds")?.value ?? 30);
+  const workers = Number($("#parallel_workers")?.value ?? 1);
   const preview = $("#batch-preview span");
   if (!start || !end) {
     preview.textContent = "Tentukan rentang tanggal untuk melihat pembagian batch.";
@@ -249,8 +279,11 @@ function updateBatchPreview() {
     preview.textContent = "Tanggal akhir harus sama atau setelah tanggal awal.";
     return;
   }
-  const batches = Math.ceil(total / days);
-  preview.textContent = `${total} hari akan dipecah menjadi ${batches} batch, masing-masing maksimal ${days} hari.`;
+  const batches = calculateDateBatches(start, end, days);
+  const modeText = workers === 1
+    ? (delay > 0 ? `1 request per waktu dengan jeda ${delay} dtk` : "1 request per waktu tanpa jeda")
+    : `${workers} request paralel dengan jeda ${delay} dtk`;
+  preview.textContent = `${total} hari akan dipecah menjadi ${batches.length} batch (maks. ${days} hari per batch, tidak menyebrang bulan, ${modeText}).`;
 }
 
 function renderExports(config) {
@@ -326,24 +359,27 @@ function showWorkflow(workflow) {
   $("#focus-search-options").hidden = !focusMode;
   $("#focus-input-options").hidden = !focusMode;
   $("#focus-file-field").hidden = !focusMode || state.focusInputType !== "excel";
-  $("#tracking-file-field").hidden = !historyMode;
+  const trackingFileField = $("#tracking-file-field");
+  if (trackingFileField) trackingFileField.hidden = true;
   $("#tracking-mode-options").hidden = !historyMode;
   $("#tracking-output-options").hidden = !historyMode;
-  $("#awb-text-field").hidden = historyMode || (focusMode && state.focusInputType === "excel");
+  $("#awb-text-field").hidden = focusMode && state.focusInputType === "excel";
 
   if (focusMode) {
     $("#awb-section-title").textContent = "Daftar Nomor Referensi / AWB";
+    $("#awb_text").placeholder = "Tempel nomor, satu per baris";
   } else if (historyMode) {
     $("#awb-section-title").textContent = state.trackingMode === "pickup_attempt"
-      ? "Daftar AWB untuk verifikasi pickup"
-      : (state.trackingMode === "courier_pod" ? "Daftar AWB untuk ID kurir POD" : "File AWB dan TLC tujuan");
+      ? "Daftar nomor AWB untuk verifikasi pickup"
+      : (state.trackingMode === "courier_pod" ? "Daftar nomor AWB untuk ID kurir POD" : "Daftar nomor AWB (dan TLC tujuan)");
+    $("#awb_text").placeholder = state.trackingMode === "milestone"
+      ? "Tempel nomor AWB (bisa AWB saja atau AWB dan TLC tujuan, pisahkan spasi/tab):\nCGK1234567890\nCGK0987654321 BDO"
+      : "Tempel nomor AWB, satu nomor per baris";
   } else {
     $("#awb-section-title").textContent = "Daftar nomor AWB";
+    $("#awb_text").placeholder = "Tempel nomor AWB, satu nomor per baris";
   }
 
-  $("#tracking-file-label").textContent = state.trackingMode !== "milestone"
-    ? "File Excel daftar AWB"
-    : "File Excel AWB dan TLC tujuan";
   $("#batch_size").closest(".field").hidden = historyMode || focusMode;
   $("#awb_parallel_workers").closest(".field").hidden = focusMode;
   $("#awb_delay_seconds").value = (historyMode || focusMode) ? "0" : "1";
@@ -390,8 +426,9 @@ async function startJob(event) {
       payload.delay_seconds = Number($("#awb_delay_seconds").value) || 0;
       payload.parallelism = 1;
     } else if (state.workflow === "tracking_history") {
-      if (!state.trackingTargets.length) throw new Error("Unggah file Excel terlebih dahulu.");
-      payload.awb_targets = state.trackingTargets;
+      const awbText = $("#awb_text").value.trim();
+      if (!awbText) throw new Error("Tempel minimal satu nomor AWB terlebih dahulu.");
+      payload.awb_text = awbText;
       payload.tracking_mode = state.trackingMode;
       payload.delay_seconds = Number($("#awb_delay_seconds").value);
       payload.parallelism = Number($("#awb_parallel_workers")?.value || 1);
@@ -455,7 +492,14 @@ function renderJobs(jobs) {
             ? `${batch.processed || 0} / ${batch.item_total || 0} AWB`
             : (batch.total ? `${bytes(batch.downloaded)} / ${bytes(batch.total)}` : (batch.downloaded ? bytes(batch.downloaded) : "-"));
           const warning = batch.warning ? `<small class="warning-text">${escapeHtml(batch.warning)}</small>` : "";
-          const result = batch.file ? `<a class="download-link" href="/api/jobs/${job.id}/batches/${batch.index}/download">Unduh file</a>${warning}` : (batch.error ? `<span class="error-text" title="${escapeHtml(batch.error)}">${escapeHtml(batch.error.slice(0, 80))}</span>` : "-");
+          const retryBtn = batch.status === "failed"
+            ? `<button type="button" class="button secondary btn-xs retry-batch" data-job-id="${job.id}" data-batch-index="${batch.index}" title="Coba lagi batch ini"><i data-lucide="rotate-cw"></i>Coba Lagi</button>`
+            : "";
+          const result = batch.file
+            ? `<a class="download-link" href="/api/jobs/${job.id}/batches/${batch.index}/download">Unduh file</a>${warning}`
+            : (batch.error
+              ? `<div class="batch-result-failed"><span class="error-text" title="${escapeHtml(batch.error)}">${escapeHtml(batch.error.slice(0, 80))}</span>${retryBtn}</div>`
+              : (retryBtn || "-"));
           return `<tr><td>${escapeHtml(batch.label)}</td><td><span class="status ${batch.status}">${statusLabel(batch.status)}</span></td><td>${progressText}</td><td>${result}</td></tr>`;
         }).join("")}
       </tbody></table>
@@ -598,15 +642,14 @@ async function importFocusFile(event) {
 
 function changeTrackingMode(event) {
   state.trackingMode = event.target.value;
-  state.trackingTargets = [];
-  state.trackingFileName = "";
-  $("#tracking_file").value = "";
-  $("#tracking-file-label").textContent = state.trackingMode !== "milestone"
-    ? "File Excel daftar AWB"
-    : "File Excel AWB dan TLC tujuan";
-  $("#awb-section-title").textContent = state.trackingMode === "pickup_attempt"
-    ? "Daftar AWB untuk verifikasi pickup"
-    : (state.trackingMode === "courier_pod" ? "Daftar AWB untuk ID kurir POD" : "File AWB dan TLC tujuan");
+  if (state.workflow === "tracking_history") {
+    $("#awb-section-title").textContent = state.trackingMode === "pickup_attempt"
+      ? "Daftar nomor AWB untuk verifikasi pickup"
+      : (state.trackingMode === "courier_pod" ? "Daftar nomor AWB untuk ID kurir POD" : "Daftar nomor AWB (dan TLC tujuan)");
+    $("#awb_text").placeholder = state.trackingMode === "milestone"
+      ? "Tempel nomor AWB (bisa AWB saja atau AWB dan TLC tujuan, pisahkan spasi/tab):\nCGK1234567890\nCGK0987654321 BDO"
+      : "Tempel nomor AWB, satu nomor per baris";
+  }
   updateAwbPreview();
 }
 
@@ -625,8 +668,11 @@ function bindEvents() {
   $("#date_from").addEventListener("change", updateBatchPreview);
   $("#date_to").addEventListener("change", updateBatchPreview);
   $("#batch_days").addEventListener("input", updateBatchPreview);
+  $("#delay_seconds")?.addEventListener("input", updateBatchPreview);
+  $("#parallel_workers")?.addEventListener("input", updateBatchPreview);
   $("#awb_text").addEventListener("input", updateAwbPreview);
-  $("#tracking_file").addEventListener("change", importTrackingFile);
+  const trackingFileInput = $("#tracking_file");
+  if (trackingFileInput) trackingFileInput.addEventListener("change", importTrackingFile);
   $("#focus_file").addEventListener("change", importFocusFile);
   $$("input[name='focus_search_by']").forEach(input => input.addEventListener("change", e => {
     state.focusSearchBy = e.target.value;
@@ -641,6 +687,8 @@ function bindEvents() {
     $("#workflow-form").reset();
     $("#batch_days").value = workflowConfig[state.workflow]?.batchDays || 7;
     $("#batch_days").max = state.workflow === "pod_v2" ? "31" : "366";
+    if ($("#delay_seconds")) $("#delay_seconds").value = "30";
+    if ($("#parallel_workers")) $("#parallel_workers").value = "1";
     if (state.workflow === "tracking_focus") {
       state.focusTargets = [];
       state.focusFileName = "";
@@ -652,24 +700,37 @@ function bindEvents() {
       showWorkflow("tracking_focus");
     } else if (state.workflow === "tracking_history") {
       state.trackingMode = "milestone";
-      state.trackingTargets = [];
-      state.trackingFileName = "";
-      $("#tracking_file").value = "";
-      $("#tracking-file-label").textContent = "File Excel AWB dan TLC tujuan";
-      $("#awb-section-title").textContent = "File AWB dan TLC tujuan";
+      const milestoneRadio = document.querySelector("input[name='tracking_mode'][value='milestone']");
+      if (milestoneRadio) milestoneRadio.checked = true;
       $("#include_summary").checked = false;
       $("#include_history").checked = false;
+      showWorkflow("tracking_history");
     }
     updateBatchPreview();
     updateAwbPreview();
   });
   $("#jobs-list").addEventListener("click", async event => {
-    const button = event.target.closest(".cancel-job");
-    if (!button) return;
-    try {
-      await api(`/api/jobs/${button.dataset.id}/cancel`, { method: "POST", body: "{}" });
-      loadJobs();
-    } catch (error) { toast(error.message); }
+    const cancelBtn = event.target.closest(".cancel-job");
+    if (cancelBtn) {
+      try {
+        await api(`/api/jobs/${cancelBtn.dataset.id}/cancel`, { method: "POST", body: "{}" });
+        loadJobs();
+      } catch (error) { toast(error.message); }
+      return;
+    }
+    const retryBtn = event.target.closest(".retry-batch");
+    if (retryBtn) {
+      retryBtn.disabled = true;
+      try {
+        await api(`/api/jobs/${retryBtn.dataset.jobId}/batches/${retryBtn.dataset.batchIndex}/retry`, { method: "POST", body: "{}" });
+        toast(`Batch ${retryBtn.dataset.batchIndex} sedang dicoba ulang...`);
+        loadJobs();
+      } catch (error) {
+        toast(error.message);
+        retryBtn.disabled = false;
+      }
+      return;
+    }
   });
 }
 
